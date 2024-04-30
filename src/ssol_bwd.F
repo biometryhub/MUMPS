@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -13,7 +13,7 @@ C  https://cecill.info/licences/Licence_CeCILL-C_V1-en.html)
 C
       SUBROUTINE SMUMPS_SOL_S(N, A, LA, IW, LIW, W, LWC,
      &    NRHS, 
-     &    RHSCOMP, LRHSCOMP, POSINRHSCOMP_BWD,
+     &    RHSINTR, LRHSINTR, POSINRHSINTR_BWD,
      &    PTRICB, PTRACB, IWCB, LIWW, W2, 
      &    NE_STEPS, STEP,
      &    FRERE, DAD, FILS, IPOOL, LPOOL, PTRIST, PTRFAC, 
@@ -25,9 +25,12 @@ C
      &    ISTEP_TO_INIV2, TAB_POS_IN_PERE, PANEL_POS, LPANEL_POS
      &    , PRUN_BELOW, TO_PROCESS, SIZE_TO_PROCESS
      &    , RHS_BOUNDS, LRHS_BOUNDS, DO_NBSPARSE, FROM_PP
+     &    , L0_OMP_MAPPING, LL0_OMP_MAPPING,
+     &    L0_OMP_FACTORS, LL0_OMP_FACTORS
      &    )
       USE SMUMPS_STATIC_PTR_M, ONLY : SMUMPS_SET_STATIC_PTR,
      &                                SMUMPS_GET_TMP_PTR
+      USE SMUMPS_STRUC_DEF, ONLY : SMUMPS_L0OMPFAC_T
       IMPLICIT NONE
       INTEGER MTYPE
       INTEGER(8), intent(in) :: LA
@@ -56,8 +59,8 @@ C
       INTEGER BUFR(LBUFR)
       INTEGER ISTEP_TO_INIV2(KEEP(71)), 
      &        TAB_POS_IN_PERE(SLAVEF+2,max(1,KEEP(56)))
-      INTEGER LRHSCOMP, POSINRHSCOMP_BWD(N)
-      REAL RHSCOMP(LRHSCOMP,NRHS)
+      INTEGER LRHSINTR, POSINRHSINTR_BWD(N)
+      REAL RHSINTR(LRHSINTR,NRHS)
       INTEGER(8), intent(in) :: LRHS_ROOT
       REAL RHS_ROOT( LRHS_ROOT )
       LOGICAL, INTENT(in) :: PRUN_BELOW
@@ -67,11 +70,16 @@ C
       INTEGER, intent(in) :: LRHS_BOUNDS
       INTEGER, intent(in) :: RHS_BOUNDS(LRHS_BOUNDS)
       LOGICAL, intent(in) :: FROM_PP
+      INTEGER, INTENT( in ) :: LL0_OMP_MAPPING, LL0_OMP_FACTORS
+      INTEGER, INTENT( in ) :: L0_OMP_MAPPING( LL0_OMP_MAPPING )
+      TYPE (SMUMPS_L0OMPFAC_T), INTENT(IN) ::
+     &                        L0_OMP_FACTORS(LL0_OMP_FACTORS)
       INCLUDE 'mpif.h'
       INCLUDE 'mumps_tags.h'
       LOGICAL FLAG
       REAL, DIMENSION(:), POINTER :: A_PTR
       INTEGER(8) :: LA_PTR
+      INTEGER :: UNDERL0MAP 
       INTEGER(8) :: POSWCB, PLEFTW
       INTEGER POSIWCB
       INTEGER NBFINF
@@ -116,34 +124,48 @@ C
       ERROR_WAS_BROADCASTED = .FALSE.
       DO_MCAST2_TERMBWD = .FALSE.
       DO WHILE ( NBFINF .NE. 0 .OR. MYLEAF_LEFT .NE. 0 )
-        BLOQ = (  III .EQ. IIPOOL  )
-        CALL SMUMPS_BACKSLV_RECV_AND_TREAT( BLOQ, FLAG, BUFR, LBUFR,
-     &     LBUFR_BYTES, MYID, SLAVEF, COMM,
-     &     N, IWCB, LIWW, POSIWCB,
-     &     W, LWC, POSWCB,
-     &     IIPOOL, NBFINF, PTRICB, PTRACB, INFO,
-     &     IPOOL, LPOOL, PANEL_POS, LPANEL_POS,
-     &     STEP,  FRERE, FILS, PROCNODE_STEPS,
-     &     PLEFTW, KEEP,KEEP8, DKEEP,
-     &     PTRIST, PTRFAC, IW, LIW, A, LA, W2, MYLEAF_LEFT, 
-     &     NRHS, MTYPE, 
-     &     RHSCOMP, LRHSCOMP, POSINRHSCOMP_BWD
-     &     , PRUN_BELOW, TO_PROCESS, SIZE_TO_PROCESS
-     &     , FROM_PP
+        IF ( SLAVEF.EQ.1 ) THEN
+          FLAG = .FALSE.
+        ELSE
+          BLOQ = (  III .EQ. IIPOOL  )
+          CALL SMUMPS_BACKSLV_RECV_AND_TREAT( BLOQ, FLAG, BUFR, LBUFR,
+     &       LBUFR_BYTES, MYID, SLAVEF, COMM,
+     &       N, IWCB, LIWW, POSIWCB,
+     &       W, LWC, POSWCB,
+     &       IIPOOL, NBFINF, PTRICB, PTRACB, INFO,
+     &       IPOOL, LPOOL, PANEL_POS, LPANEL_POS,
+     &       STEP,  FRERE, FILS, PROCNODE_STEPS,
+     &       PLEFTW, KEEP,KEEP8, DKEEP,
+     &       PTRIST, PTRFAC, IW, LIW, A, LA, W2, MYLEAF_LEFT, 
+     &       NRHS, MTYPE, 
+     &       RHSINTR, LRHSINTR, POSINRHSINTR_BWD
+     &       , PRUN_BELOW, TO_PROCESS, SIZE_TO_PROCESS
+     &       , FROM_PP
      &     )
-        IF ( INFO(1) .LT. 0 ) GOTO 340 
+          IF ( INFO(1) .LT. 0 ) GOTO 340 
+        ENDIF
         IF ( .NOT. FLAG ) THEN
           IF (III .NE. IIPOOL) THEN
             INODE = IPOOL(IIPOOL-1)
             IIPOOL = IIPOOL - 1
+            IF (KEEP(400) .GT. 0 ) THEN
+              UNDERL0MAP = L0_OMP_MAPPING(STEP(INODE))
+            ELSE
+              UNDERL0MAP = 0
+            ENDIF
+            IF (UNDERL0MAP .EQ. 0 .OR. KEEP(201).GT.0) THEN
               CALL SMUMPS_SET_STATIC_PTR(A)
               CALL SMUMPS_GET_TMP_PTR(A_PTR)
               LA_PTR = LA
+            ELSE
+              A_PTR => L0_OMP_FACTORS(UNDERL0MAP)%A
+              LA_PTR = L0_OMP_FACTORS(UNDERL0MAP)%LA
+            ENDIF
             CALL SMUMPS_SOLVE_NODE_BWD( INODE, 
      &        N, IPOOL, LPOOL, IIPOOL, NBFINF,
      &        A_PTR(1), LA_PTR, IW, LIW, W, LWC, NRHS,
      &        POSWCB, PLEFTW, POSIWCB,
-     &        RHSCOMP, LRHSCOMP, POSINRHSCOMP_BWD,
+     &        RHSINTR, LRHSINTR, POSINRHSINTR_BWD,
      &        PTRICB, PTRACB, IWCB, LIWW, W2, 
      &        NE_STEPS, STEP,
      &        FRERE, FILS, PTRIST, PTRFAC,
@@ -159,7 +181,7 @@ C
      &        )
             IF ( INFO(1) .LT. 0 ) THEN
               IF (.NOT. ERROR_WAS_BROADCASTED) THEN
-                IF (NBFINF .EQ. 0 ) THEN
+                IF (NBFINF .NE. 0 ) THEN
                   CALL SMUMPS_BDC_ERROR( MYID, SLAVEF, COMM, KEEP )
                 ENDIF
               ENDIF

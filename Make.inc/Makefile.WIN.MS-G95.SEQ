@@ -1,6 +1,6 @@
 #
-#  This file is part of MUMPS 5.3.4, released
-#  on Tue Mar 31 17:14:49 UTC 2020
+#  This file is part of MUMPS 5.7.0, released
+#  on Tue Apr 23 10:25:09 UTC 2024
 #
 # We are grateful to Evgenii Rudnyi for his help and suggestions
 # regarding Windows installation.
@@ -37,11 +37,12 @@
 
 LPORDDIR = $(topdir)/PORD/lib/
 IPORD    = -I$(topdir)/PORD/include/
-LPORD    = -L$(LPORDDIR) -lpord
+PATHPORD = -LIBPATH:$(LPORDDIR)
+LPORD    = libpord$(PLAT).lib
 
-LMETISDIR = $(topdir)/../metis-5.1.0/build/x64-gcc/libmetis
-PATHMETIS = -L$(LMETISDIR)
-IMETIS    = -I$(topdir)/../metis-5.1.0/include
+#LMETISDIR = /opt/metis-5.1.0/build/Linux-x86_64/libmetis
+#PATHMETIS = -LIBPATH:$(LMETISDIR)
+#IMETIS    = /opt/metis-5.1.0/include
 
 # You have to choose one among the following two lines depending on
 # the type of analysis you want to perform. If you want to perform only
@@ -49,7 +50,7 @@ IMETIS    = -I$(topdir)/../metis-5.1.0/include
 # variable below); for both parallel and sequential analysis choose the second 
 # line (remember to add -Dparmetis in the ORDERINGSF variable below)
 
-LMETIS    = -L$(LMETISDIR) -lmetis
+#LMETIS    = libmetis.lib
 #LMETIS    = libparmetis.lib libmetis.lib
 
 # The following variables will be used in the compilation process.
@@ -57,9 +58,10 @@ LMETIS    = -L$(LMETISDIR) -lmetis
 # If you want to use Metis 4.X or an older version, you should use -Dmetis4 instead of -Dmetis
 # or in addition with -Dparmetis (if you are using parmetis 3.X or older).
 #ORDERINGSF = -Dscotch -Dmetis -Dpord -Dptscotch -Dparmetis
-ORDERINGSF  = -Dpord -Dmetis
+ORDERINGSF  = -Dpord
 ORDERINGSC  = $(ORDERINGSF)
 
+PATHORDERINGS = $(PATHMETIS) $(PATHPORD) $(PATHSCOTCH)
 LORDERINGS = $(LMETIS) $(LPORD) $(LSCOTCH)
 IORDERINGSF = $(ISCOTCH)
 IORDERINGSC = $(IMETIS) $(IPORD) $(ISCOTCH)
@@ -70,32 +72,35 @@ IORDERINGSC = $(IMETIS) $(IPORD) $(ISCOTCH)
 ########################################################################
 ################################################################################
 
-PLAT =
-LIBEXT  = .a
-OUTC    = -o
+PLAT    =
+LIBEXT  = .lib
+LIBEXT_SHARED  = .so
+SONAME = -soname
+SHARED_OPT = -shared
+#FPIC_OPT = -fPIC
+#RPATH_OPT
+OUTC    = -Fo
 OUTF    = -o 
-RM      = rm -f
-CC      = gcc
-FC = gfortran
-FL = gfortran
-AR = ar vr 
+RM      = /bin/rm -f
+CC      = cl
+FC      = g95
+FL      = cl
+AR      = lib -out:
 RANLIB  = echo
 
 
-INCSEQ = -I$(topdir)/libseq
-LIBSEQ = $(topdir)/libseq/libmpiseq.a
+INCSEQ  = -I$(topdir)/libseq
+LIBSEQ  = $(topdir)/libseq/libmpiseq$(PLAT).lib
 
-# LIBBLAS = mkl_intel_c.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
-# LIBOTHERS = libf95.lib libgcc.lib -link $(PATHORDERINGS)
-LIBBLAS="C:\Users\david\DWREML\dwreml-c\win\dwreml_mkl.dll"
-LIBOTHERS=-lpthread "C:\Users\david\MFXLM\mfxlm-c\win\libiomp5md.dll"
+LIBBLAS = mkl_intel_c.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
+LIBOTHERS = libf95.lib libgcc.lib -link $(PATHORDERINGS)
 #Preprocessor defs for calling Fortran from C (-DAdd_ or -DAdd__ or -DUPPER)
-CDEFS   = -DAdd_
+CDEFS   = -DAdd__
 
 #Begin Optimization options
-OPTF   = -fopenmp -O3 -fallow-argument-mismatch
-OPTL   = -fopenmp -O3
-OPTC   = -fopenmp -O3
+OPTF   = -O -i4 -fno-underscoring -fcase-upper
+OPTL   =   
+OPTC   = -O2 -MD 
 #End Optimization options
 
 INCS = $(INCSEQ)

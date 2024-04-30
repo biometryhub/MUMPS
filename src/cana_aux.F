@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -11,6 +11,11 @@ C  released under the CeCILL-C license
 C  (see doc/CeCILL-C_V1-en.txt, doc/CeCILL-C_V1-fr.txt, and
 C  https://cecill.info/licences/Licence_CeCILL-C_V1-en.html)
 C
+#if defined(__ve__)
+#if defined(VHOFFLOAD)
+#include 've.h'
+#endif
+#endif
       MODULE CMUMPS_ANA_AUX_M
       IMPLICIT NONE
       CONTAINS
@@ -45,7 +50,7 @@ C
       INTEGER, INTENT(IN)    :: METIS_OPTIONS(40)
 #endif      
       INTEGER, INTENT(IN), OPTIONAL     :: NORIG_ARG
-      INTEGER, INTENT(IN), OPTIONAL     :: SIZEOFBLOCKS(N)
+      INTEGER, INTENT(IN), TARGET, OPTIONAL  :: SIZEOFBLOCKS(N)
       LOGICAL, INTENT(IN), OPTIONAL     :: GCOMP_PROVIDED_IN
       TYPE(COMPACT_GRAPH_T), OPTIONAL   :: GCOMP
       INTEGER, DIMENSION(:), ALLOCATABLE, TARGET :: IWALLOC
@@ -87,47 +92,39 @@ C
       PARAMETER (MINSYM=50)
       INTEGER(8) :: K79REF
       PARAMETER(K79REF=12000000_8)
-      INTEGER, PARAMETER :: LIDUMMY = 1 
-      INTEGER            :: IDUMMY(1)   
       INTEGER MTRANS, COMPRESS,NCMP,IERROR,J,JPERM,NCST
       INTEGER TOTEL 
+      INTEGER NFR
 #if defined(pord)
       INTEGER TOTW
 #endif
-      INTEGER WEIGHTUSED, WEIGHTREQUESTED
+      INTEGER WEIGHTUSED 
+#if defined(scotch) || defined(ptscotch)
+      INTEGER WEIGHTREQUESTED
+#endif
+      INTEGER HOW_TO_SPLIT_ROOT, INODE_Scalapack_CAND, 
+     &        NBSONS_Scalapack_CAND
+      LOGICAL SCOTCH_SYMBOLIC
       LOGICAL IDENT,SPLITROOT
       LOGICAL FREE_CENTRALIZED_MATRIX
       LOGICAL GCOMP_PROVIDED
       LOGICAL INPLACE64_GRAPH_COPY, INPLACE64_RESTORE_GRAPH
       INTEGER(8) :: LIW8, NZG8
       DOUBLE PRECISION TIMEB
+      INTEGER, POINTER, DIMENSION(:) :: SIZEOFBLOCKS_PTR
+      INTEGER, TARGET    :: IDUMMY_ARRAY(1)
+      INTEGER            :: LSIZEOFBLOCKS_PTR
+      LOGICAL            :: SIZEOFBLOCKS_AVAIL
       EXTERNAL MUMPS_ANA_H, CMUMPS_ANA_J, 
      &     CMUMPS_ANA_K, CMUMPS_ANA_GNEW,
      &     CMUMPS_ANA_LNEW, CMUMPS_ANA_M
-#if defined(OLDDFS)
-      EXTERNAL CMUMPS_ANA_L
-#endif
       EXTERNAL CMUMPS_GNEW_SCHUR
       EXTERNAL CMUMPS_LDLT_COMPRESS, CMUMPS_EXPAND_PERMUTATION,
      &     CMUMPS_SET_CONSTRAINTS
-      IF (LIWALLOC.GT.0_8) THEN
-        ALLOCATE( IWALLOC (LIWALLOC), stat = IERR )
-        IF ( IERR .GT. 0 ) THEN
-         INFO( 1 ) = -7
-         CALL MUMPS_SET_IERROR(LIWALLOC,INFO(2))
-         GOTO 90                
-        ENDIF
-      ENDIF
       ALLOCATE( IWL1 (N), stat = IERR )
       IF ( IERR .GT. 0 ) THEN
          INFO( 1 ) = -7
          INFO( 2 ) = N
-         GOTO 90                
-      ENDIF
-      ALLOCATE( IPEALLOC(N+1), stat = IERR )
-      IF ( IERR .GT. 0 ) THEN
-         INFO( 1 ) = -7
-         INFO( 2 ) = (N+1)*KEEP(10)
          GOTO 90                
       ENDIF
       ALLOCATE( PTRAR (N,3), stat = IERR )
@@ -136,6 +133,10 @@ C
          INFO( 2 ) = 3*N
          GOTO 90                
       ENDIF
+      SCOTCH_SYMBOLIC=(KEEP(270).EQ.0) 
+#if defined(MUMPS_SCOTCHIMPORTOMPTHREADS)
+      SCOTCH_SYMBOLIC=.FALSE.
+#endif
       symmetry      = INFO(8)
       NBQD          = 0
       GCOMP_PROVIDED=.FALSE.
@@ -153,13 +154,6 @@ C
         INFO(2) = 1
         RETURN
       ENDIF
-      IF ( (LIWALLOC.EQ.0_8).AND.(.not.GCOMP_PROVIDED)) THEN
-        INFO(1) = -900
-        WRITE(6,*) " INTERNAL ERROR in MUMPS(ANA_F) ", 
-     &  "LIWALLOC, GCOMP_PROVIDED=", LIWALLOC, GCOMP_PROVIDED
-        INFO(2) = 2
-        RETURN
-      ENDIF
       IF (GCOMP_PROVIDED) THEN
         NZG8 =  GCOMP%NZG
         LIW8 =  NZG8 + int(GCOMP%NG,8)+1_8
@@ -169,9 +163,30 @@ C
           PTRAR(I,2) = int(IPE(I+1)-IPE(I))
          ENDDO
       ELSE
+        IF (LIWALLOC.GT.0_8) THEN
+          ALLOCATE( IWALLOC (LIWALLOC), stat = IERR )
+          IF ( IERR .GT. 0 ) THEN
+           INFO( 1 ) = -7
+           CALL MUMPS_SET_IERROR(LIWALLOC,INFO(2))
+           GOTO 90                
+          ENDIF
+        ENDIF
+        IF ( LIWALLOC.EQ.0_8 ) THEN
+          INFO(1) = -900
+          WRITE(6,*) " INTERNAL ERROR in MUMPS(ANA_F) ", 
+     &    "LIWALLOC, GCOMP_PROVIDED=", LIWALLOC, GCOMP_PROVIDED
+          INFO(2) = 2
+          RETURN
+        ENDIF
         LIW8 =  LIWALLOC
-        NZG8 = NZ8
+        NZG8 =  NZ8
         IW   => IWALLOC(1:LIW8)
+        ALLOCATE( IPEALLOC(N+1), stat = IERR )
+        IF ( IERR .GT. 0 ) THEN
+          INFO( 1 ) = -7
+          INFO( 2 ) = (N+1)*KEEP(10)
+          GOTO 90                
+        ENDIF
         IPE  => IPEALLOC(1:N+1)
       ENDIF
       LP    = ICNTL(1)
@@ -180,6 +195,16 @@ C
       PROK  = ((MP.GT.0).AND.(ICNTL(4).GE.2))
       LDIAG = ICNTL(4)
       COMPRESS_SCHUR = .FALSE.
+      IF (present(SIZEOFBLOCKS)) THEN
+       SIZEOFBLOCKS_PTR => SIZEOFBLOCKS(1:N)
+       LSIZEOFBLOCKS_PTR = N
+       SIZEOFBLOCKS_AVAIL = .TRUE.
+      ELSE
+       SIZEOFBLOCKS_PTR => IDUMMY_ARRAY
+       SIZEOFBLOCKS_AVAIL = .FALSE.
+       LSIZEOFBLOCKS_PTR = 1
+       IDUMMY_ARRAY(1) = -1
+      ENDIF
       IF (PROK) THEN
         IF (present(GCOMP)) THEN
          WRITE(MP,'(A,I10,A,I13,A)') " Processing a graph of size:", N
@@ -194,7 +219,7 @@ C
        FREE_CENTRALIZED_MATRIX = (
      &                    (KEEP(54).EQ.3).AND.
      &                    (KEEP(494).EQ.0).AND.
-     &                    (KEEP(106).NE.2)
+     &                    (KEEP(106).NE.3)
      &                          )
       ENDIF
       INPLACE64_GRAPH_COPY    = .FALSE.
@@ -221,7 +246,7 @@ C
           WRITE (MP,99999) N, NZG8, LIW8, INFO(1)
           IF (J8.GT.0_8) WRITE (MP,99998) (IRN(I8),ICN(I8),I8=1_8,J8)
         ENDIF
-         K = min0(10,N)
+         K = min(10,N)
          IF (LDIAG.EQ.4) K = N
          IF (IORD.EQ.1 .AND. K.GT.0) THEN
             WRITE (MP,99997) (IKEEP1(I),I=1,K)
@@ -329,9 +354,6 @@ C
             ELSE
                NEMIN = 2*KEEP(1)
             ENDIF
-            IF (PROK) 
-     &           WRITE(MP,*) 'Setting static pivoting ON, COMPRESS =',
-     &           COMPRESS
          ENDIF
       ENDIF
       IF(MTRANS .GT. 0 .AND. KEEP(50) .EQ. 2) THEN
@@ -597,7 +619,7 @@ C
      &              PARENT, IWFR8,
      &              PTRAR(1,2), IW, IWL1, IKEEP1,
      &              IKEEP2, NCMPA, INFO, LP, LPOK,
-     &              WEIGHTUSED, WEIGHTREQUESTED)
+     &              WEIGHTUSED, WEIGHTREQUESTED, SCOTCH_SYMBOLIC)
                 ENDIF
                ELSE IF (SCOTCH_INT_SIZE.EQ.64) THEN
                  CALL MUMPS_SCOTCH_MIXEDto64(NCMP, 
@@ -605,8 +627,8 @@ C
      &              PARENT, IWFR8,
      &              PTRAR(1,2), IW, IWL1, IKEEP1,
      &              IKEEP2, NCMPA, INFO, LP, LPOK, KEEP(10),
-     &              INPLACE64_GRAPH_COPY,
-     &              WEIGHTUSED, WEIGHTREQUESTED)
+     &              INPLACE64_GRAPH_COPY, INPLACE64_RESTORE_GRAPH,
+     &              WEIGHTUSED, WEIGHTREQUESTED, SCOTCH_SYMBOLIC)
                ELSE
                  WRITE(*,*)
      &           "Internal error in SCOTCH wrappers, SCOTCH_INT_SIZE=",
@@ -614,7 +636,13 @@ C
                  CALL MUMPS_ABORT()
                ENDIF
                IF (INFO(1) .LT. 0) GOTO 90
-               IF ( (COMPRESS .EQ. 1)
+               IF (.NOT. SCOTCH_SYMBOLIC) THEN
+                 IF ( COMPRESS .EQ. 1 ) THEN
+                 CALL CMUMPS_EXPAND_PERMUTATION(N,NCMP,KEEP(94),
+     &           KEEP(93),PIV(1),IKEEP1(1),IKEEP2(1))
+                 COMPRESS = -1       
+                 ENDIF
+               ELSE IF ( (COMPRESS .EQ. 1)
      &             .OR. 
      &            ( (NORIG.NE.N).AND.present(SIZEOFBLOCKS).AND.
      &              (WEIGHTUSED.EQ.0) )
@@ -906,12 +934,13 @@ C
          ENDIF
       ENDIF
       IF (IORD.EQ.1 .OR. IORD.EQ.5 .OR. COMPRESS.EQ.-1 
+     &    .OR. ( (IORD.EQ.3).AND.(.NOT.SCOTCH_SYMBOLIC) ) 
      &    .OR.  
      &   ( (NORIG.NE.N).AND.present(SIZEOFBLOCKS) .AND.(IORD.EQ.3)
      &     .AND. (WEIGHTUSED.EQ.0)
      &   )
      &   ) THEN
-         IF ((KEEP(106).EQ.1).OR.(KEEP(106).EQ.3)
+         IF ((KEEP(106).EQ.1).OR.(KEEP(106).EQ.2).OR.(KEEP(106).EQ.4)
      &          .OR.(KEEP(60).NE.0)) THEN
             IF ( COMPRESS .EQ. -1 ) THEN
                ALLOCATE(IPQ8(N),stat=IERR)
@@ -928,12 +957,42 @@ C
                DEALLOCATE(IPQ8)
             ENDIF
             COMPRESS = 0
-           IF (KEEP(106).EQ.3.AND.KEEP(60).EQ.0) THEN
+           IF ( PROK ) THEN
+              CALL MUMPS_SECDEB( TIMEB )
+           ENDIF
+           IF (KEEP(106).EQ.2) THEN
+             IF (PROK) THEN
+             WRITE(MP,'(A)') " SYMBOLIC based on column counts "
+             ENDIF
+             IF (present(SIZEOFBLOCKS)) THEN
+               DO I=1, N
+                FRERE(I) = SIZEOFBLOCKS(I)
+               ENDDO
+             ELSE
+               FRERE(1) = -1
+             ENDIF
+                CALL MUMPS_WRAP_GINP94 (
+     &           N, IPE(1), IW(1), IWFR8,
+     &           IKEEP1(1), 
+     &           FRERE(1),
+     &          KEEP(60), LISTVAR_SCHUR(1), SIZE_SCHUR,
+     &          KEEP(378),
+     &           IWL1, PARENT, 
+     &           IKEEP2(1), IKEEP3(1), NFSIZ(1), 
+     &           PTRAR(1,1), PTRAR(1,2), PTRAR(1,3),
+     &           INFO )
+                 IF (INFO(1).LT.0) GOTO 90
+            ELSE IF ((KEEP(106).EQ.4).AND.(KEEP(60).EQ.0).AND.
+     &        (.NOT.present(SIZEOFBLOCKS) .OR. (NORIG.EQ.N))
+     &        ) THEN
+              WRITE(MP,*) " Undefined option for ICNTL(58) "
+              INFO(1)= -99998
+              GOTO 90
            ELSE
-            ALLOCATE( WTEMP ( 2*N ), stat = IERR )
+            ALLOCATE( WTEMP ( 2_8*int(N,8) ), stat = IERR )
             IF ( IERR .GT. 0 ) THEN
                INFO( 1 ) = -7
-               INFO( 2 ) = 2*N
+               CALL MUMPS_SET_IERROR(2_8*int(N,8), INFO(2) )
                GOTO 90          
             ENDIF
             THRESH = -1
@@ -941,11 +1000,6 @@ C
                ITEMP = 0 
             ELSE
                ITEMP = SIZE_SCHUR
-               IF (KEEP(60)==1) THEN
-                  KEEP(20) = LISTVAR_SCHUR(1)
-               ELSE
-                  KEEP(38) = LISTVAR_SCHUR(1)
-               ENDIF
             ENDIF
             AGG6 =.FALSE.
             IF (present(SIZEOFBLOCKS)) THEN
@@ -965,6 +1019,11 @@ C
      &           AGG6, PARENT)
             DEALLOCATE(WTEMP)
            ENDIF  
+           IF ( PROK ) THEN
+               CALL MUMPS_SECFIN( TIMEB )
+               WRITE( MP, '(A,F12.4)' )
+     &        ' ELAPSED TIME IN symbolic factorization  =', TIMEB
+           ENDIF
          ELSE
             CALL CMUMPS_ANA_J(N, NZ8, IRN(1), ICN(1), IKEEP1(1), IW(1),
      &           LIW8, IPE(1),
@@ -978,21 +1037,15 @@ C
             CALL CMUMPS_ANA_K(N, IPE(1), IW(1), LIW8, IWFR8, IKEEP1(1),
      &              IKEEP2(1), IWL1,
      &              PTRAR, NCMPA, ITEMP, PARENT)
-            IF (KEEP(60) .EQ. 0) THEN
-               IF (KEEP(60) .EQ. 1) THEN
-                  KEEP(20) = LISTVAR_SCHUR(1)
-               ELSE
-                  KEEP(38) = LISTVAR_SCHUR(1)
-               ENDIF
-            ENDIF
          ENDIF                  
       ENDIF                     
-#if defined(OLDDFS)
-      CALL CMUMPS_ANA_L
-     &     (N, PARENT, IWL1, IKEEP1(1), IKEEP2(1), IKEEP3(1),
-     &     NFSIZ, INFO(6), FILS(1), FRERE(1), PTRAR(1,3),
-     &     NEMIN, KEEP(60))
-#else
+      IF (KEEP(60) .NE. 0) THEN
+        IF (KEEP(60)==1) THEN
+           KEEP(20) = LISTVAR_SCHUR(1)
+        ELSE
+           KEEP(38) = LISTVAR_SCHUR(1)
+        ENDIF
+      ENDIF
       IF (allocated(IPEALLOC)) DEALLOCATE(IPEALLOC)
       ALLOCATE(WTEMP(N), stat=IERR)
       IF ( IERR .GT. 0 ) THEN
@@ -1000,26 +1053,16 @@ C
          INFO( 2 ) = N
          GOTO 90                
       ENDIF
-      IF (present(SIZEOFBLOCKS)) THEN
-       CALL CMUMPS_ANA_LNEW
+      CALL CMUMPS_ANA_LNEW
      &     (N, PARENT, IWL1, IKEEP1(1), IKEEP2(1), IKEEP3(1),
      &     NFSIZ(1), PTRAR, INFO(6), FILS(1), FRERE(1), 
      &     PTRAR(1,3), NEMIN, WTEMP, KEEP(60),
      &     KEEP(20),KEEP(38),PTRAR(1,2),KEEP(104),IW(1),KEEP(50), 
-     &     ICNTL(13), KEEP(37), NSLAVES, KEEP(250).EQ.1 
-     &     , .TRUE. , SIZEOFBLOCKS, N
+     &     ICNTL(13), KEEP(37), KEEP(197), NSLAVES, KEEP(250).EQ.1,
+     &     SIZEOFBLOCKS_AVAIL, SIZEOFBLOCKS_PTR(1), LSIZEOFBLOCKS_PTR
+     &     , INODE_Scalapack_CAND, NBSONS_Scalapack_CAND, KEEP(11)
      &      )
-      ELSE
-       CALL CMUMPS_ANA_LNEW
-     &     (N, PARENT, IWL1, IKEEP1(1), IKEEP2(1), IKEEP3(1),
-     &     NFSIZ(1), PTRAR, INFO(6), FILS(1), FRERE(1), 
-     &     PTRAR(1,3), NEMIN, WTEMP, KEEP(60),
-     &     KEEP(20),KEEP(38),PTRAR(1,2),KEEP(104),IW(1),KEEP(50), 
-     &     ICNTL(13), KEEP(37), NSLAVES, KEEP(250).EQ.1 
-     &     , .FALSE., IDUMMY, LIDUMMY )
-      ENDIF
       DEALLOCATE(WTEMP)
-#endif
       IF (KEEP(60).NE.0)  THEN
          IF (KEEP(60)==1) THEN
             IN = KEEP(20)
@@ -1051,6 +1094,8 @@ C
       IF ( KEEP(53) .NE. 0 ) THEN
          CALL MUMPS_MAKE1ROOT( N, FRERE(1), FILS(1), NFSIZ(1),
      &                         KEEP(20) )
+         INODE_Scalapack_CAND = KEEP(20)
+         NBSONS_Scalapack_CAND = 1
       END IF
       IF (  (KEEP(48) == 4 .AND. KEEP8(21).GT.0_8)
      &     .OR.
@@ -1060,80 +1105,106 @@ C
          CALL CMUMPS_SET_K821_SURFACE(KEEP8(21), KEEP(2),
      &        KEEP(48), KEEP(50), NSLAVES)
       END IF
-      IF (KEEP(210).LT.0.OR.KEEP(210).GT.2) THEN
-         KEEP(210)=0
-      ENDIF
-      IF (KEEP(210).EQ.0.AND.KEEP(201).GT.0) THEN
-         KEEP(210)=1            
-      ENDIF
-      IF (KEEP(210).EQ.0.AND.KEEP(201).EQ.0) THEN
-         KEEP(210)=2            
-      ENDIF
-      IF (KEEP(210).EQ.2) THEN
-         KEEP8(79)=huge(KEEP8(79))
-      ENDIF
+      IF (KEEP(210).LT.1.OR.KEEP(210).GT.2) KEEP(210)=2
+      IF (KEEP(210).EQ.2) KEEP8(79)=huge(KEEP8(79))
       IF (KEEP(210).EQ.1.AND.KEEP8(79).LE.0_8) THEN
         KEEP8(79)=K79REF * int(NSLAVES,8)
       ENDIF
-      IF ( (KEEP(79).EQ.0).OR.(KEEP(79).EQ.2).OR.
+      IF (KEEP(11).EQ.0) THEN
+       IF ( (KEEP(79).EQ.0).OR.(KEEP(79).EQ.2).OR.
      &     (KEEP(79).EQ.3).OR.(KEEP(79).EQ.5).OR.
      &     (KEEP(79).EQ.6)
      &   )  THEN
-       IF (KEEP(210).EQ.1) THEN
-        SPLITROOT = .FALSE. 
-        IF ( KEEP(62).GE.1) THEN
-          IWL1(1) = -1
-          IF (present(SIZEOFBLOCKS)) THEN
-            DO I= 1, N
-               IWL1(I) = SIZEOFBLOCKS(I)
-            ENDDO
-          ENDIF
-          CALL CMUMPS_CUTNODES(N, FRERE(1), FILS(1), NFSIZ(1), 
-     &                       IWL1(1), N, INFO(6),
-     &                       NSLAVES, KEEP,KEEP8, SPLITROOT,
-     &                       MP, LDIAG, INFO(1), INFO(2))
-          IF (INFO(1).LT.0) GOTO 90 
-          IF (PROK) THEN
+        IF (KEEP(210).EQ.1) THEN
+         SPLITROOT = .FALSE. 
+         IF ( KEEP(62).GE.1) THEN
+           CALL CMUMPS_CUTNODES(N, FRERE(1), FILS(1), NFSIZ(1), 
+     &         SIZEOFBLOCKS_PTR(1), LSIZEOFBLOCKS_PTR, INFO(6),
+     &         NSLAVES, KEEP,KEEP8, SPLITROOT,
+     &         MP, LDIAG, INFO(1), INFO(2))
+           IF (INFO(1).LT.0) GOTO 90 
+           IF (PROK) THEN
                WRITE(MP,*) " Number of split nodes in pre-splitting=",
      &         KEEP(61)
-          ENDIF
+           ENDIF
+         ENDIF
         ENDIF
        ENDIF
       ENDIF
-      SPLITROOT = ((ICNTL(13).GT.0 .AND. NSLAVES.GT.ICNTL(13)) .OR.
-     &     ICNTL(13).EQ.-1 )
-      IF (KEEP(53) .NE. 0) THEN
-         SPLITROOT = .TRUE.
+      HOW_TO_SPLIT_ROOT = 0 
+      SPLITROOT = ICNTL(13) .EQ. -1
+      IF (KEEP(11).GT.1) THEN
+       NFR = NFSIZ(INODE_Scalapack_CAND)
+#if defined(NOSCALAPACK)
+        SPLITROOT = SPLITROOT .OR. 
+     & ( NSLAVES.GT.0.AND. 
+     &   ( REAL(NFR) - REAL(NFR)/REAL(max(2,NSLAVES))
+     &    .GT. REAL(KEEP(9)) )
+     & )
+#else
+        SPLITROOT = SPLITROOT .OR.
+     &  ( ICNTL(13).GT.0 .AND. NSLAVES .GT. ICNTL(13). AND.
+     &    ( REAL(NFR) - REAL(NFR)/REAL(max(2,NSLAVES)) 
+     &     .GT. REAL(KEEP(9)) )
+     &  )
+#endif
+      ELSE
+#if defined(NOSCALAPACK)
+        SPLITROOT = SPLITROOT .OR. NSLAVES.GT.0
+#else
+        SPLITROOT = SPLITROOT .OR.
+     &            (ICNTL(13).GT.0 .AND. NSLAVES .GT. ICNTL(13)
+     &            )
+#endif
       ENDIF
+      IF (SPLITROOT.AND.KEEP(11).GT.0) HOW_TO_SPLIT_ROOT =1 
+      IF (KEEP(53) .NE. 0) THEN
+         SPLITROOT         = .TRUE.
+         IF (KEEP(11).GT.0) HOW_TO_SPLIT_ROOT = 2
+      ENDIF
+#if defined(NOSCALAPACK)
+#else
+      IF ( KEEP(11).GT.0) THEN 
+        IF (.NOT.SPLITROOT .AND. 
+     &    (KEEP(60).EQ.0).AND.   
+     &    ( (NFSIZ(INODE_Scalapack_CAND).GT.KEEP(37))
+     &     .AND.(ICNTL(13).LE.0) )
+     &    .AND.
+     &    (NBSONS_Scalapack_CAND.GT.KEEP(11)) 
+     &    ) THEN
+          HOW_TO_SPLIT_ROOT = 3
+          SPLITROOT=.TRUE.
+        ENDIF
+      ENDIF
+#endif
       SPLITROOT = (SPLITROOT.AND.( (KEEP(60).EQ.0) ))
       IF (SPLITROOT) THEN
-         IWL1(1) = -1
-         IF (present(SIZEOFBLOCKS)) THEN
-            DO I= 1, N
-               IWL1(I) = SIZEOFBLOCKS(I)
-            ENDDO
-         ENDIF
-         CALL CMUMPS_CUTNODES(N, FRERE(1), FILS(1), NFSIZ(1), 
-     &                    IWL1(1), N, INFO(6),
-     &                    NSLAVES, KEEP,KEEP8, SPLITROOT,
-     &                    MP, LDIAG, INFO(1), INFO(2))
-         IF (INFO(1).LT.0) GOTO 90 
-         IF ( KEEP(53) .NE. 0 ) THEN
-          CALL MUMPS_MAKE1ROOT( N, FRERE(1), FILS(1), NFSIZ(1),
-     &                          KEEP(20) )
-         ENDIF
+        IF (KEEP(11).EQ.0) THEN
+          CALL CMUMPS_CUTNODES(N, FRERE(1), FILS(1), NFSIZ(1), 
+     &              SIZEOFBLOCKS_PTR(1), LSIZEOFBLOCKS_PTR, INFO(6),
+     &              NSLAVES, KEEP,KEEP8, SPLITROOT,
+     &              MP, LDIAG, INFO(1), INFO(2))
+          IF (INFO(1).LT.0) GOTO 90 
+          IF ( KEEP(53) .NE. 0 ) THEN
+           CALL MUMPS_MAKE1ROOT( N, FRERE(1), FILS(1), NFSIZ(1),
+     &                           KEEP(20) )
+          ENDIF
+        ELSE
+         CALL CMUMPS_SPLIT_ROOT( NSLAVES, 
+     &            HOW_TO_SPLIT_ROOT, INODE_Scalapack_CAND,
+     &            N, FRERE(1), FILS(1), NFSIZ(1), 
+     &            KEEP(1), KEEP8(1),
+     &            SIZEOFBLOCKS_PTR(1), LSIZEOFBLOCKS_PTR, INFO(6))
+        ENDIF
       ENDIF
       IF (LDIAG.GT.2 .AND. MP.GT.0) THEN
-         K = min0(10,N)
+         K = min(10,N)
          IF (LDIAG.EQ.4) K = N
          IF (K.GT.0) WRITE (MP,99987) (NFSIZ(I),I=1,K)
          IF (K.GT.0) WRITE (MP,99989) (FILS(I),I=1,K)
          IF (K.GT.0) WRITE (MP,99988) (FRERE(I),I=1,K)
       ENDIF
       GO TO 90
-      INFO(1) = -4
-      INFO(2) = K
-      GOTO 90 
  90   CONTINUE 
       IF (INFO(1) .NE. 0) THEN
         IF ((LP.GT.0).AND.(ICNTL(4).GE.1)) 
@@ -1161,23 +1232,24 @@ C
 99988 FORMAT ('FRERE(.)  =', 10I9/(11X, 10I9))
 99987 FORMAT ('NFSIZ(.)  =', 10I9/(11X, 10I9))
       END SUBROUTINE CMUMPS_ANA_F
-      SUBROUTINE CMUMPS_ANA_N_DIST( id, PTRAR )
+      SUBROUTINE CMUMPS_ANA_N_DIST( id, NBINCOL, NBINROW )
       USE CMUMPS_STRUC_DEF, ONLY : CMUMPS_STRUC
       IMPLICIT NONE
       include 'mpif.h'
       TYPE(CMUMPS_STRUC), INTENT(INOUT), TARGET :: id
-      INTEGER(8), INTENT(OUT), TARGET        :: PTRAR(:)
+      INTEGER, INTENT(OUT), TARGET        :: NBINCOL(:)
+      INTEGER, INTENT(OUT), TARGET        :: NBINROW(:)
       INTEGER          :: IERR, allocok
       INTEGER          :: IOLD, JOLD, INEW, JNEW
       INTEGER(8)       :: K, INZ
       INTEGER, POINTER :: IIRN(:), IJCN(:)
-      INTEGER(8), POINTER :: IWORK1(:), IWORK2(:)
+      INTEGER, POINTER :: IWORK1(:), IWORK2(:)
       LOGICAL          :: IDO
       IF(id%KEEP(54) .EQ. 3) THEN
             IIRN => id%IRN_loc
             IJCN => id%JCN_loc
             INZ = id%KEEP8(29)
-            IWORK1 => PTRAR(id%N+1:id%N+id%N)
+            IWORK1 => NBINROW(1:id%N)
             allocate(IWORK2(id%N),stat=allocok)
             IF (allocok > 0 ) THEN
                id%INFO(1) = -7
@@ -1189,8 +1261,8 @@ C
             IIRN => id%IRN
             IJCN => id%JCN
             INZ  =  id%KEEP8(28)
-            IWORK1 => PTRAR(1:id%N)
-            IWORK2 => PTRAR(id%N+1:id%N+id%N)
+            IWORK1 => NBINCOL(1:id%N)
+            IWORK2 => NBINROW(1:id%N)
             IDO = id%MYID .EQ. 0
       END IF
       DO 50 IOLD=1,id%N
@@ -1208,33 +1280,36 @@ C
                JNEW = id%SYM_PERM(JOLD)
                IF ( id%KEEP( 50 ) .EQ. 0 ) THEN
                   IF (INEW.LT.JNEW) THEN
-                     IWORK2(IOLD) = IWORK2(IOLD) + 1_8
+                     IWORK2(IOLD) = IWORK2(IOLD) + 1
                   ELSE
-                     IWORK1(JOLD) = IWORK1(JOLD) + 1_8
+                     IWORK1(JOLD) = IWORK1(JOLD) + 1
                   ENDIF
                ELSE
                   IF ( INEW .LT. JNEW ) THEN
-                     IWORK1( IOLD ) = IWORK1( IOLD ) + 1_8
+                     IWORK1( IOLD ) = IWORK1( IOLD ) + 1
                   ELSE 
-                     IWORK1( JOLD ) = IWORK1( JOLD ) + 1_8
+                     IWORK1( JOLD ) = IWORK1( JOLD ) + 1
                   END IF
                ENDIF
             ENDIF
  70      CONTINUE
       END IF
       IF (id%KEEP(54) .EQ. 3) THEN
-         CALL MPI_ALLREDUCE(IWORK1(1), PTRAR(1), id%N,
-     &        MPI_INTEGER8, MPI_SUM, id%COMM, IERR )
-         CALL MPI_ALLREDUCE(IWORK2(1), PTRAR(id%N+1), id%N,
-     &        MPI_INTEGER8, MPI_SUM, id%COMM, IERR )
+         CALL MUMPS_BIGALLREDUCE(.FALSE., IWORK1(1), NBINCOL(1), id%N,
+     &        MPI_INTEGER, MPI_SUM, id%COMM, IERR )
+         CALL MUMPS_BIGALLREDUCE(.FALSE., IWORK2(1), NBINROW(1), id%N,
+     &        MPI_INTEGER, MPI_SUM, id%COMM, IERR )
          deallocate(IWORK2)
       ELSE
-         CALL MPI_BCAST( PTRAR(1), 2*id%N, MPI_INTEGER8,
+         CALL MPI_BCAST( NBINCOL(1), id%N, MPI_INTEGER,
+     &        0, id%COMM, IERR )
+         CALL MPI_BCAST( NBINROW(1), id%N, MPI_INTEGER,
      &        0, id%COMM, IERR )
       END IF
       RETURN
       END SUBROUTINE CMUMPS_ANA_N_DIST
-      SUBROUTINE CMUMPS_ANA_O( N, NZ, MTRANS, PERM, IKEEPALLOC,
+      SUBROUTINE CMUMPS_ANA_O( N, NZ, MTRANS, PERM,
+     &     IKEEPALLOC, LIKEEPALLOC,
      &     idIRN, idJCN, idA, idROWSCA, idCOLSCA, WORK2, KEEP,
      &     ICNTL, INFO, INFOG )
       IMPLICIT NONE
@@ -1244,7 +1319,8 @@ C
       INTEGER, POINTER, DIMENSION(:) :: idIRN, idJCN
       COMPLEX, POINTER, DIMENSION(:) :: idA
       REAL, POINTER, DIMENSION(:) :: idROWSCA, idCOLSCA
-      INTEGER, TARGET        :: IKEEPALLOC(3*N)
+      INTEGER(8), INTENT(IN) :: LIKEEPALLOC
+      INTEGER, TARGET        :: IKEEPALLOC(LIKEEPALLOC)
       INTEGER, INTENT(INOUT) :: MTRANS
       INTEGER                :: KEEP(500)
       INTEGER, INTENT(IN)    :: ICNTL(60)
@@ -1288,9 +1364,6 @@ C
       SCALINGLOC = .FALSE.
       IF(KEEP(52) .EQ. -2) THEN
          IF(.not.associated(idA)) THEN
-            INFO(1) = -22
-            INFO(2) = 4
-            GOTO 500
          ELSE
             SCALINGLOC = .TRUE.
          ENDIF
@@ -1325,14 +1398,14 @@ C
                   IF(ABSAK .EQ. real(0.0E0)) THEN
                      RZ_DIAG = RZ_DIAG + 1
                   ENDIF
-                  NZER_DIAG = NZER_DIAG - 1                     
-                  ENDIF
-               ENDIF
+                ENDIF
+                NZER_DIAG = NZER_DIAG - 1                     
+              ENDIF
             ENDIF
         ENDDO
-        IF( (NZER_DIAG+RZ_DIAG) .LT. (N/10) ) THEN
-          MTRANS = 0
-          KEEP(95) =1
+        IF( (NZER_DIAG+RZ_DIAG) .LT. max(1,(N/10)) ) THEN
+          MTRANS   = 0
+          KEEP(95) = 1
           GOTO 500
         ENDIF
       ENDIF
@@ -1340,6 +1413,7 @@ C
          IF (PROK) WRITE(MPRINT,*) 
      &        'Scaling will be computed during analysis'
       ENDIF
+      IF( MTRANS.NE.0 .AND. (.NOT.associated(idA)) ) MTRANS=1
       MTRANSLOC = MTRANS
       IF (MTRANS.LT.0 .OR. MTRANS.GT.7) GO TO 500
       IF (K50 .EQ. 0) THEN
@@ -1361,7 +1435,8 @@ C
          MTRANSLOC = 5
       ENDIF
       IF (N.EQ.1) THEN
-        MTRANS=0
+        MTRANS   = 0
+        KEEP(95) = 1 
         GO TO 500
       ENDIF
       IF(K50 .NE. 0) THEN
@@ -1370,7 +1445,7 @@ C
          NZTOT = NZ
       ENDIF
       ZERODIAG => IKEEPALLOC(1:N) 
-      STR_KER => IKEEPALLOC(N+1:2*N)
+      STR_KER  => IKEEPALLOC(int(N+1,8):2_8*int(N,8))
       CALL CMUMPS_MTRANSI(ICNTL64,CNTL64)
       ICNTL64(1) = ICNTL(1)
       ICNTL64(2) = ICNTL(2)
@@ -1418,7 +1493,8 @@ C
       ALLOCATE( IPQ8(N), IPE(N+1), stat = allocok )
       IF ( allocok .GT. 0 ) THEN
          INFO( 1 ) = -7
-         INFO( 2 ) = (2*N+1)*KEEP(10)
+         CALL MUMPS_SET_IERROR( (2_8*int(N,8)+1_8) * int(KEEP(10),8),
+     &                         INFO(2) )
          GOTO 500               
       ENDIF
       IF (MTRANSLOC.EQ.1) THEN
@@ -1428,8 +1504,8 @@ C
       IF (MTRANSLOC.EQ.3) LDWMIN = max( NZTOT+1_8 , N8+3_8 )
       IF (MTRANSLOC.EQ.4) LDWMIN = 2_8 * N8 + 
      &                             max( NZTOT , N8+3_8 )
-      IF (MTRANSLOC.EQ.5) LDWMIN = 3_8*N8 + NZTOT
-      IF (MTRANSLOC.EQ.6) LDWMIN = 4_8*N8 + NZTOT
+      IF (MTRANSLOC.EQ.5) LDWMIN = 3_8 * N8 + NZTOT
+      IF (MTRANSLOC.EQ.6) LDWMIN = 4_8 * N8 + NZTOT
       LDW   = LDWMIN
       ALLOCATE(S2(LDW), stat=allocok)
       IF (allocok .GT. 0 ) THEN
@@ -1598,7 +1674,7 @@ C
       ENDIF
       DUPPLI = .FALSE.
       NZsave = NZREAL
-      FLAG => IKEEPALLOC(2*N+1:3*N)
+      FLAG => IKEEPALLOC(2_8*int(N,8)+1:3_8*int(N,8))
       IF(MTRANSLOC.NE.1) THEN
          CALL CMUMPS_SUPPRESS_DUPPLI_VAL(N,NZREAL,IPE(1),IW(IRNW),S2,
      &        PERM(1),IPQ8(1))
@@ -1825,8 +1901,8 @@ C
             ICNTL_SYM_MWM(1) = 0
             ICNTL_SYM_MWM(2) = 1
          ENDIF
-         MARKED => IKEEPALLOC(N+1:2*N)
-         FLAG => IKEEPALLOC(2*N+1:3*N)
+         MARKED  => IKEEPALLOC(    int(N,8)+1_8 : 2_8*int(N,8))
+         FLAG    => IKEEPALLOC(2_8*int(N,8)+1_8 : 3_8*int(N,8))
          PIV_OUT => WORK2(1:N)
          IF(MTRANSLOC .LT. 4) THEN
             LSC = 1
@@ -1948,7 +2024,7 @@ C
    30       IP = LWFR
             JP = IPE(IE)
    40       IW(IWFR) = JS
-            MINJS = min0(MINJS,IPS(JS)+0)
+            MINJS = min(MINJS,IPS(JS)+0)
             IWFR = IWFR + 1_8
    50     CONTINUE
    60     IPE(IE) = int(-ME,8)
@@ -2045,7 +2121,7 @@ C
       LBIG = 0
       DO 100 I=1,N
         L1 = IQ(I)
-        LBIG = max0(L1,LBIG)
+        LBIG = max(L1,LBIG)
         IWFR = IWFR + int(L1,8)
         IPE(I) = IWFR - 1_8
   100 CONTINUE
@@ -2156,227 +2232,15 @@ C
    60 CONTINUE
    70 RETURN
       END SUBROUTINE CMUMPS_ANA_D
-#if defined(OLDDFS)
-      SUBROUTINE CMUMPS_ANA_L(N, IPE, NV, IPS, NE, NA, NFSIZ, 
-     &                  NSTEPS,
-     &                  FILS, FRERE,NDD,NEMIN, KEEP60)
-      INTEGER N,NSTEPS
-      INTEGER NDD(N)
-      INTEGER FILS(N), FRERE(N)
-      INTEGER IPS(N), NE(N), NA(N), NFSIZ(N)
-      INTEGER IPE(N), NV(N)
-      INTEGER NEMIN, KEEP60
-      INTEGER I,IF,IS,NR,NR1,INS,INL,INB,INF,INFS,INSW
-      INTEGER K,L,ISON,IN,INP,IFSON,INC,INO
-      INTEGER INOS,IB,IL
-      DO 10 I=1,N
-        IPS(I) = 0
-        NE(I) = 0
-   10 CONTINUE
-      DO 20 I=1,N
-        IF (NV(I).GT.0) GO TO 20
-        IF = -IPE(I)
-        IS = -IPS(IF)
-        IF (IS.GT.0) IPE(I) = IS
-        IPS(IF) = -I
-   20 CONTINUE
-      NR = N + 1
-      DO 50 I=1,N
-        IF (NV(I).LE.0) GO TO 50
-        IF = -IPE(I)
-        IF (IF.NE.0) THEN
-         IS = -IPS(IF)
-         IF (IS.GT.0) IPE(I) = IS
-         IPS(IF) = -I
-        ELSE
-         NR = NR - 1
-         NE(NR) = I
-        ENDIF
-   50 CONTINUE
-      DO 999 I=1,N
-       FILS(I) = IPS(I)
- 999  CONTINUE
-      NR1 = NR
-      INS = 0
- 1000 IF (NR1.GT.N) GO TO 1151
-      INS = NE(NR1)
-      NR1 = NR1 + 1
- 1070 INL = FILS(INS)
-      IF (INL.LT.0) THEN
-       INS = -INL
-       GO TO 1070
-      ENDIF
- 1080 IF (IPE(INS).LT.0) THEN
-       INS       = -IPE(INS)
-       FILS(INS) = 0
-       GO TO 1080
-      ENDIF
-      IF (IPE(INS).EQ.0) THEN
-       INS = 0
-       GO TO 1000
-      ENDIF
-      INB = IPE(INS)
-      IF (NV(INB).EQ.0) THEN
-       INS = INB
-       GO TO 1070
-      ENDIF
-      IF (NV(INB).GE.NV(INS)) THEN
-       INS = INB
-       GO TO 1070
-      ENDIF
-      INF = INB
- 1090 INF = IPE(INF)
-      IF (INF.GT.0) GO TO 1090
-      INF  = -INF
-      INFS = -FILS(INF)
-      IF (INFS.EQ.INS) THEN
-       FILS(INF) = -INB
-       IPS(INF)  = -INB
-       IPE(INS)  = IPE(INB)
-       IPE(INB)  = INS
-       INS       = INB
-       GO TO 1070
-      ENDIF
-      INSW = INFS
- 1100 INFS = IPE(INSW)
-      IF (INFS.NE.INS) THEN
-       INSW = INFS
-       GO TO 1100
-      ENDIF
-      IPE(INS) = IPE(INB)
-      IPE(INB) = INS
-      IPE(INSW)= INB
-      INS      =INB
-      GO TO 1070
- 1151 CONTINUE
-      DO 51 I=1,N
-       FRERE(I) = IPE(I)
-       FILS(I) = IPS(I)
- 51   CONTINUE
-      IS = 1
-      I  = 0
-      IL = 0
-      DO 160 K=1,N
-        IF (I.GT.0) GO TO 60
-        I = NE(NR)
-        NE(NR) = 0
-        NR = NR + 1
-        IL = N
-        NA(N) = 0
-   60   DO 70 L=1,N
-          IF (IPS(I).GE.0) GO TO 80
-          ISON = -IPS(I)
-          IPS(I) = 0
-          I = ISON
-          IL = IL - 1
-          NA(IL) = 0
-   70   CONTINUE
-   80   IPS(I) = K
-        NE(IS) = NE(IS) + 1
-        IF (NV(I).GT.0) GO TO 89
-      IN = I
- 81   IN =  FRERE(IN)
-      IF (IN.GT.0) GO TO 81
-      IF = -IN
-      IN = IF
- 82   INL = IN
-      IN = FILS(IN)
-      IF (IN.GT.0) GO TO 82
-      IFSON = -IN
-      FILS(INL) = I
-      IN = I
- 83   INP = IN
-      IN = FILS(IN)
-      IF (IN.GT.0) GO TO 83
-      IF (IFSON .EQ. I) GO TO 86
-      FILS(INP) = -IFSON
-      IN = IFSON
- 84   INC =IN
-      IN = FRERE(IN)
-      IF (IN.NE.I) GO TO 84
-      FRERE(INC) = FRERE(I)
-      GO TO 120
- 86   IF (FRERE(I).LT.0) FILS(INP) = 0
-      IF (FRERE(I).GT.0) FILS(INP) = -FRERE(I)
-      GO TO 120
-   89   IF (IL.LT.N) NA(IL+1) = NA(IL+1) + 1
-        NA(IS) = NA(IL)
-        NDD(IS) = NV(I)
-        NFSIZ(I) = NV(I)
-        IF (NA(IS).LT.1) GO TO 110
-        IF (   (KEEP60.NE.0).AND.
-     &         (NE(IS).EQ.NDD(IS)) ) GOTO 110
-        IF (NDD(IS-1)-NE(IS-1).EQ.NDD(IS)) GO TO 100
-        IF ((NE(IS-1).GE.NEMIN).AND.
-     &         (NE(IS).GE.NEMIN) ) GO TO 110
-        IF (2*NE(IS-1)*(NDD(IS)-NDD(IS-1)+NE(IS-1)).GE.
-     &    ((NDD(IS)+NE(IS-1))*
-     &    (NDD(IS)+NE(IS-1))*NEMIN/100)) GO TO 110
-  100   NA(IS-1) = NA(IS-1) + NA(IS) - 1
-        NDD(IS-1) = NDD(IS) + NE(IS-1)
-        NE(IS-1) = NE(IS) + NE(IS-1)
-        NE(IS) = 0
-      IN=I
- 101  INL = IN
-      IN = FILS(IN)
-      IF (IN.GT.0) GO TO 101
-      IFSON = -IN
-      IN = IFSON
- 102  INO = IN
-      IN =  FRERE(IN)
-      IF (IN.GT.0) GO TO 102
-      FILS(INL) = INO
-      NFSIZ(I) = NDD(IS-1)
-      IN = INO
- 103  INP = IN
-      IN = FILS(IN)
-      IF (IN.GT.0) GO TO 103
-      INOS = -IN
-      IF (IFSON.EQ.INO) GO TO 107
-      IN = IFSON
-      FILS(INP) = -IFSON
- 105  INS = IN
-      IN =  FRERE(IN)
-      IF (IN.NE.INO) GO TO 105
-      IF (INOS.EQ.0) FRERE(INS) = -I
-      IF (INOS.NE.0) FRERE(INS) =  INOS
-      IF (INOS.EQ.0) GO TO 109
- 107  IN = INOS
-      IF (IN.EQ.0) GO TO 109
- 108  INT = IN
-      IN =  FRERE(IN)
-      IF (IN.GT.0) GO TO 108
-      FRERE(INT) = -I
- 109  CONTINUE
-        GO TO 120
-  110   IS = IS + 1
-  120   IB = IPE(I)
-        IF (IB.LT.0) GOTO 150
-        IF (IB.EQ.0) GOTO 140
-        NA(IL) = 0
-  140   I = IB
-        GO TO 160
-  150   I = -IB
-        IL = IL + 1
-  160 CONTINUE
-      NSTEPS = IS - 1
-      DO 170 I=1,N
-        K = FILS(I)
-        IF (K.GT.0) THEN
-          FRERE(K)  = N + 1
-          NFSIZ(K)  = 0
-        ENDIF
- 170  CONTINUE
-      RETURN
-      END SUBROUTINE CMUMPS_ANA_L
-#else
       SUBROUTINE CMUMPS_ANA_LNEW(N, IPE, NV, IPS, NE, NA, NFSIZ,
      &               NODE, NSTEPS,
      &               FILS, FRERE, ND, NEMIN, SUBORD, KEEP60, 
      &               KEEP20, KEEP38, NAMALG,NAMALGMAX,
-     &               CUMUL,KEEP50, ICNTL13, KEEP37, NSLAVES,
+     &               CUMUL,KEEP50, ICNTL13, KEEP37, KEEP197, NSLAVES,
      &               ALLOW_AMALG_TINY_NODES 
      &               , BLKON, SIZEOFBLOCKS, LSIZEOFBLOCKS
+     &               , INODE_Scalapack_CAND, NBSONS_Scalapack_CAND
+     &               , KEEP11
      &               )
       IMPLICIT NONE
       INTEGER  N, NSTEPS, KEEP60, KEEP20, KEEP38, KEEP50
@@ -2390,9 +2254,13 @@ C
      &                  FLOPS_AVANT, FLOPS_APRES
       INTEGER ICNTL13, KEEP37, NSLAVES
       LOGICAL ALLOW_AMALG_TINY_NODES
+      INTEGER KEEP197
       LOGICAL, INTENT(IN) :: BLKON
       INTEGER, INTENT(IN) :: LSIZEOFBLOCKS
       INTEGER, INTENT(IN) :: SIZEOFBLOCKS(LSIZEOFBLOCKS) 
+      INTEGER, INTENT(OUT):: INODE_Scalapack_CAND, 
+     &                       NBSONS_Scalapack_CAND
+      INTEGER, INTENT(IN) :: KEEP11
 #if  defined(NOAMALGTOFATHER)
 #else
 #endif
@@ -2401,6 +2269,8 @@ C
       INTEGER INOS,IB,IL
       INTEGER IPERM
       INTEGER MAXNODE
+      INTEGER SIZE_Scalapack_CAND, NBSONS_current_root
+      LOGICAL ROOT_WITH_FEW_SONS
 #if defined(NOAMALGTOFATHER)
       INTEGER INB,INF,INFS,INL,INSW,INT1,NR1
 #else
@@ -2408,6 +2278,10 @@ C
 #endif
       LOGICAL AMALG_TO_father_OK
       AMALG_COUNT = 0
+      INODE_Scalapack_CAND  = -1
+      NBSONS_Scalapack_CAND = -1
+      SIZE_Scalapack_CAND   = -1
+      NBSONS_current_root   = 0
       DO 10 I=1,N
         CUMUL(I)= 0
         IPS(I)  = 0
@@ -2517,6 +2391,16 @@ C
          NR = NR + 1
          IL = N
          NA(N) = 0
+         NBSONS_current_root =0
+         IF (IPS(I).LT.0) THEN
+          IB = -IPS(I)
+          NBSONS_current_root = NBSONS_current_root + 1
+  69      IB =FRERE(IB)
+          IF (IB.GT.0) THEN
+             NBSONS_current_root = NBSONS_current_root + 1
+             GOTO 69
+          ENDIF
+         ENDIF
         ENDIF
         DO 70 L=1,N
           IF (IPS(I).GE.0) EXIT
@@ -2526,8 +2410,14 @@ C
           IL = IL - 1
           NA(IL) = 0
    70   CONTINUE
-#if ! defined(NOAMALGTOFATHER)
         DADI = -IPE(I)  
+        IF (DADI.EQ.0) THEN
+         IF (NV(I) .GT. SIZE_Scalapack_CAND) THEN
+           INODE_Scalapack_CAND = I
+           SIZE_Scalapack_CAND  = NV(I)
+         ENDIF
+        ENDIF
+#if ! defined(NOAMALGTOFATHER)
         IF ( (DADI.NE.0) .AND.
      &      (
      &       (KEEP60.EQ.0).OR.
@@ -2546,7 +2436,11 @@ C
      &           ( (NODE(I).LE.NEMIN.and. NODE(DADI).GT. MAXNODE)
      &     .OR.(NODE(DADI).LE.NEMIN .and. NODE(I).GT.MAXNODE)))
            AMALG_TO_father_OK = ( AMALG_TO_father_OK .AND.
-     &       ( PERCENT_FILL < dble(NEMIN) ) )
+     &     ( PERCENT_FILL < dble(NEMIN) ) )
+           IF (KEEP197 .EQ. 1 ) THEN
+            AMALG_TO_father_OK = AMALG_TO_father_OK.OR.
+     &       ( NODE(I).LE.2*NEMIN .AND. NODE(DADI).LT.4*NEMIN)
+           ENDIF
            AMALG_TO_father_OK = ( AMALG_TO_father_OK .AND.
      &     ( ACCU / SIZE_DADI_AMALGAMATED .LE. dble(NEMIN)) )
            IF (AMALG_TO_father_OK) THEN
@@ -2568,10 +2462,28 @@ C
                  AMALG_TO_father_OK = .FALSE.
               ENDIF
            ENDIF
+           ROOT_WITH_FEW_SONS =.TRUE.
+           IF (KEEP11.GT.0) THEN
+             IF (IPE(DADI).EQ.0) THEN
+                IF 
+     &          (NA(IL)+max(NA(IL+1),NBSONS_current_root)
+     &                    .GT.KEEP11)
+     &          ROOT_WITH_FEW_SONS= .FALSE.
+             ELSE
+                IF 
+     &          (NA(IL)+NA(IL+1)+max(NA(N),NBSONS_current_root)
+     &                    .GT.KEEP11)
+     &          ROOT_WITH_FEW_SONS= .FALSE.
+             ENDIF
+           ENDIF
            IF ( (NV(I).GT. 50*NV(DADI)).AND. (NSLAVES.GT.1) 
      &          .AND. (ICNTL13.LE.0)
-     &          .AND. (NV(I).GT. KEEP37) )  THEN
-             AMALG_TO_father_OK = .TRUE.
+     &          .AND. (NV(I).GT. KEEP37) 
+     &          .AND. ROOT_WITH_FEW_SONS
+     &        )  THEN
+             IF ( ( ACCU / SIZE_DADI_AMALGAMATED ) .LT. 0.2 ) THEN
+               AMALG_TO_father_OK = .TRUE.
+             ENDIF
            ENDIF
            IF ( ALLOW_AMALG_TINY_NODES .AND.
      &     NODE(I) * 900 .LE. NV(DADI) - NAMALG(DADI)) THEN
@@ -2715,6 +2627,17 @@ C
         ENDIF
   160 CONTINUE
       NSTEPS = IS - 1
+        I = INODE_Scalapack_CAND
+        INOS = -FILS(I)  
+        NBSONS_Scalapack_CAND = 0
+        IF (INOS.GT.0) THEN
+          NBSONS_Scalapack_CAND = NBSONS_Scalapack_CAND+1
+          INO = FRERE(INOS)
+          DO WHILE (INO.GT.0 .AND. INO.LE.N) 
+           NBSONS_Scalapack_CAND = NBSONS_Scalapack_CAND+1
+           INO = FRERE(INO)
+          ENDDO
+        ENDIF
       DO I=1, N
         IF (NV(I).EQ.0) THEN
           FRERE(I) = N+1
@@ -2735,7 +2658,6 @@ C
       ENDDO
       RETURN
       END SUBROUTINE CMUMPS_ANA_LNEW
-#endif
       SUBROUTINE CMUMPS_ANA_M(NE, ND, NSTEPS,
      & MAXFR, MAXELIM, K50, SIZEFAC_TOT, MAXNPIV,
      & K5,K6,PANEL_SIZE,K253)
@@ -2818,26 +2740,36 @@ C
       RETURN
       END SUBROUTINE CMUMPS_ANA_R
       SUBROUTINE CMUMPS_DIAG_ANA
-     &( MYID, COMM, KEEP,KEEP8, INFO, INFOG, RINFO, RINFOG, ICNTL )
+     &( MYID, COMM, KEEP,KEEP8, INFO, INFOG, RINFO, RINFOG, ICNTL,
+     &  SIZE_SCHUR )
       IMPLICIT NONE
-      INTEGER COMM, MYID, KEEP(500), INFO(80), ICNTL(60), INFOG(80)
-      INTEGER(8) KEEP8(150)
-      REAL RINFO(40), RINFOG(40)
+      INTEGER, INTENT(IN)    :: COMM, MYID, KEEP(500), INFO(80), 
+     &                          ICNTL(60), INFOG(80), SIZE_SCHUR
+      INTEGER(8), INTENT(IN) :: KEEP8(150)
+      REAL, INTENT(IN)       :: RINFO(40), RINFOG(40)
       INCLUDE 'mpif.h'
       INTEGER MASTER, MPG
+      INTEGER ITMP
       PARAMETER( MASTER = 0 )
       MPG = ICNTL(3)
       IF ( MYID.eq.MASTER.and.MPG.GT.0.AND.ICNTL(4).GE.2) THEN
+       ITMP = KEEP(13)
+       IF (ICNTL(15).EQ.0) THEN
+          ITMP = 0
+       ENDIF
        WRITE(MPG, 99992) INFO(1), INFO(2),
      &  KEEP8(109), KEEP8(111), INFOG(4),
      &  INFOG(5), KEEP(28), INFOG(32), INFOG(7), KEEP(23), 
-     &  ICNTL(7), KEEP(12), 
-     &  ICNTL(18),
+     &  ICNTL(7), KEEP(95), ICNTL(13), KEEP(12), 
+     &  ITMP,
+     &  ICNTL(18), KEEP(252), KEEP(494), ICNTL(48),
+     &  KEEP(106),
      &  KEEP(56), KEEP(61), RINFOG(1)
        IF (KEEP(95).GT.1)             
      &      WRITE(MPG, 99993) KEEP(95) 
        IF (KEEP(54).GT.0) WRITE(MPG, 99994) KEEP(54)
-       IF (KEEP(60).GT.0) WRITE(MPG, 99995) KEEP(60)
+       IF (KEEP(60).GT.0) WRITE(MPG, 99995) KEEP(60), SIZE_SCHUR
+       IF (KEEP(251).GT.0)  WRITE(MPG, 99997) KEEP(251)
        IF (KEEP(253).GT.0)  WRITE(MPG, 99996) KEEP(253)
       ENDIF
       RETURN
@@ -2853,16 +2785,25 @@ C
      &       ' --  (7) Ordering option effectively used       =',I16/
      &       ' ICNTL (6) Maximum transversal option           =',I16/
      &       ' ICNTL (7) Pivot order option                   =',I16/
+     &       ' ICNTL(12) Ordering symmetric indef. matrices   =',I16/
+     &       ' ICNTL(13) Parallelism/splitting of root node   =',I16/
      &       ' ICNTL(14) Percentage of memory relaxation      =',I16/
+     &       ' ICNTL(15) Analysis by block effectively used   =',I16/
      &       ' ICNTL(18) Distributed input matrix (on if >0)  =',I16/
+     &       ' ICNTL(32) Forward elimination during facto.    =',I16/
+     &       ' ICNTL(35) BLR activation                       =',I16/
+     &       ' ICNTL(48) Tree based multithreading            =',I16/
+     &       ' ICNTL(58) Symbolic factorization option        =',I16/
      &       ' Number of level 2 nodes                        =',I16/
      &       ' Number of split nodes                          =',I16/
      &       ' RINFOG(1) Operations during elimination (estim)=',
      &                                                        1PD10.3)
 99993 FORMAT(' Ordering compressed/constrained (ICNTL(12))    =',I16)
 99994 FORMAT(' Distributed matrix entry format (ICNTL(18))    =',I16)
-99995 FORMAT(' Effective Schur option (ICNTL(19))             =',I16)
+99995 FORMAT(' Effective Schur option (ICNTL(19))             =',I16/
+     &       ' Size of Schur (SIZE_SCHUR)                     =',I16)
 99996 FORMAT(' Forward solution during factorization, NRHS    =',I16)
+99997 FORMAT(' ICNTL(31) Discard factors (eff. value)         =',I16)
       END SUBROUTINE CMUMPS_DIAG_ANA
       SUBROUTINE CMUMPS_CUTNODES
      &           ( N, FRERE, FILS, NFSIZ, SIZEOFBLOCKS, LSIZEOFBLOCKS,
@@ -2881,7 +2822,7 @@ C
       INTEGER INODE, DEPTH, I, IBEG, IEND, IIPOOL, NROOT
       INTEGER MAX_DEPTH, ISON, TOT_CUT, MAX_CUT, STRAT
       INTEGER(8) :: K79
-      INTEGER NFRONT, K82, allocok
+      INTEGER K82, allocok
       LOGICAL BLKON
       BLKON = .NOT.(SIZEOFBLOCKS(1).EQ.-1) 
       K79  = KEEP8(79)
@@ -2940,19 +2881,16 @@ C
       TOT_CUT = 0
       IF (SPLITROOT) THEN
         MAX_CUT = NROOT*max(K82,2)
-        INODE = abs(IPOOL(1))
-        NFRONT = NFSIZ( INODE )
-        K79 = max(
-     &         int(NFRONT,8)*int(NFRONT,8)/(int(K82+1,8)*int(K82+1,8)),
-     &         9_8)
-        IF (KEEP(53).NE.0) THEN
-          MAX_CUT =  NFRONT
-          K79 = 121_8*121_8
+        IF (KEEP(72).EQ.1) THEN
+          K79 = min(3_8*3_8,K79)
         ELSE
           K79 = min(2000_8*2000_8,K79)
           IF (KEEP(376) .EQ. 1) THEN
             K79 = min(int(KEEP(9)+1,8)*int(KEEP(9)+1,8),K79)
           ENDIF
+        ENDIF
+        IF (KEEP(53).NE.0) THEN
+          K79 = 121_8*121_8
         ENDIF
       ELSE
          MAX_CUT = 2 * NSLAVES
@@ -3172,6 +3110,138 @@ C
       ENDIF
       RETURN
       END SUBROUTINE CMUMPS_SPLIT_1NODE
+      SUBROUTINE CMUMPS_SPLIT_ROOT
+     & ( NSLAVES, HOW, INODE, N, FRERE, FILS, NFSIZ, KEEP, KEEP8,
+     &   SIZEOFBLOCKS, LSIZEOFBLOCKS, NSTEPS)
+      IMPLICIT NONE
+      INTEGER, INTENT(in)    :: NSLAVES, HOW
+      INTEGER, INTENT(in)    :: INODE, N
+      INTEGER(8), INTENT(in) :: KEEP8(150)
+      INTEGER, INTENT(inout) :: NSTEPS
+      INTEGER, INTENT(inout) :: KEEP(500)
+      INTEGER, INTENT(inout) :: FRERE( N ), FILS( N ), NFSIZ( N )
+      INTEGER, INTENT(IN)    :: LSIZEOFBLOCKS
+      INTEGER, INTENT(IN)    :: SIZEOFBLOCKS(LSIZEOFBLOCKS)
+      LOGICAL    :: BLKON
+      INTEGER(8) :: K79
+      INTEGER I, IN, NPIV, NFRONT
+      INTEGER INODE_SON, INODE_FATH, IN_SON, IN_FATH, IN_GRANDFATH
+      INTEGER NPIV_COMPG, NPIV_SON_COMPG, NPIV_FATH_COMPG
+      INTEGER NPIV_SON, NPIV_FATH, NPIV_TEMP
+      INTEGER, PARAMETER :: K_HOW1 = 4000
+      IF (FRERE(INODE).NE.0) RETURN
+      BLKON = .NOT.(SIZEOFBLOCKS(1).EQ.-1) 
+      K79 = max(KEEP8(79), 4_8)
+      K79 = min(20000_8*20000_8,K79) 
+      IF (KEEP(72).EQ.1) THEN
+          K79 = min(3_8*3_8,K79)
+      ENDIF
+      IF ((HOW.LT.1) .OR. (HOW.GT.3)) THEN
+       RETURN 
+      ENDIF
+      IF (HOW.EQ.2) THEN
+       K79 = min(K79, 121_8*121_8)
+      ENDIF
+      NFRONT = NFSIZ (INODE)
+      NPIV = NFRONT
+      IF (NPIV .LE. 1 ) RETURN
+      IF (BLKON) THEN
+       IN = INODE
+       NPIV_COMPG = 0 
+       DO WHILE( IN > 0 )
+         NPIV_COMPG = NPIV_COMPG + 1
+         IN = FILS( IN )
+       ENDDO
+      ELSE 
+        NPIV_COMPG = NPIV
+      ENDIF
+      IF (HOW.EQ.1) THEN
+        IF ( (NFRONT/2) .LT. K_HOW1 ) RETURN
+        NPIV_FATH = max(NFRONT/max(NSLAVES,2), 1)
+        NPIV_FATH = max(NPIV_FATH, K_HOW1/2)
+        NPIV_FATH = min(NPIV_FATH, max(NFRONT/2,1))
+        NPIV_FATH = min(int(sqrt(real(K79))), NPIV_FATH)
+        NPIV_SON  = NPIV - NPIV_FATH
+      ELSE IF (HOW.EQ.2) THEN
+        NPIV_FATH = min(int(sqrt(real(K79))), int(NPIV/2))
+        NPIV_SON  = NPIV - NPIV_FATH
+      ELSE  
+        NPIV_FATH = max(NFRONT - 3*KEEP(6),1) 
+        NPIV_SON  = NPIV - NPIV_FATH
+      ENDIF
+       INODE_SON = INODE
+       IF (BLKON) THEN
+         NPIV_TEMP       = 0
+         NPIV_SON_COMPG  = 0
+         IN_SON = INODE
+         DO WHILE (IN_SON > 0) 
+           NPIV_TEMP = NPIV_TEMP + SIZEOFBLOCKS(IN_SON)
+           NPIV_SON_COMPG  = NPIV_SON_COMPG +1
+           IF (NPIV_TEMP.GE.NPIV_SON) EXIT
+           IN_SON = FILS( IN_SON )
+         END DO
+         NPIV_FATH_COMPG = NPIV_COMPG - NPIV_SON_COMPG
+         NPIV_SON        = NPIV_TEMP
+         NPIV_FATH       = NPIV - NPIV_SON 
+       ELSE
+         NPIV_SON_COMPG  = NPIV_SON
+         NPIV_FATH_COMPG = NPIV_FATH
+         IN_SON = INODE
+         DO I = 1, NPIV_SON_COMPG - 1
+           IN_SON = FILS( IN_SON )
+         END DO
+       ENDIF
+       IF (NPIV_FATH_COMPG.EQ.0)  RETURN
+       INODE_FATH = FILS( IN_SON )
+       IF ( INODE_FATH .LT. 0 ) THEN
+       write(*,*) 'Error: INODE_FATH < 0 ', INODE_FATH
+       END IF
+       IN_FATH = INODE_FATH
+       DO WHILE ( FILS( IN_FATH ) > 0 )
+         IN_FATH = FILS( IN_FATH )
+       END DO
+       FRERE( INODE_FATH ) = FRERE( INODE_SON )
+       FRERE( INODE_SON  ) = - INODE_FATH
+       FILS ( IN_SON     ) = FILS( IN_FATH )
+       FILS ( IN_FATH    ) = - INODE_SON
+       IN = FRERE( INODE_FATH )
+       DO WHILE ( IN > 0 )
+           IN = FRERE( IN )
+       END DO
+       IF ( IN .eq. 0 )  GO TO 10
+       IN = -IN
+       DO WHILE ( FILS( IN ) > 0 )
+           IN = FILS( IN )
+       END DO
+       IN_GRANDFATH = IN
+       IF ( FILS( IN_GRANDFATH ) .eq. - INODE_SON ) THEN
+           FILS( IN_GRANDFATH ) = -INODE_FATH
+       ELSE
+           IN = IN_GRANDFATH
+           IN = - FILS ( IN )
+           DO WHILE ( FRERE( IN ) > 0 )
+             IF ( FRERE( IN ) .eq. INODE_SON ) THEN
+               FRERE( IN ) = INODE_FATH
+               GOTO 10
+             END IF
+             IN = FRERE( IN )
+           END DO
+           WRITE(*,*) 'ERROR 2 in SPLIT NODE',
+     &          IN_GRANDFATH, IN, FRERE(IN)
+       END IF
+ 10    CONTINUE
+       NFSIZ(INODE_SON) = NFRONT
+       NFSIZ(INODE_FATH) = NFRONT - NPIV_SON
+       KEEP(2) = max( KEEP(2), NFRONT - NPIV_SON )
+       NSTEPS  = NSTEPS + 1
+       IF ( (KEEP(53).EQ.0) .AND. NSLAVES.GT.1) THEN
+         KEEP(38) = INODE_FATH
+       ENDIF
+       IF ( KEEP(53).NE.0 ) THEN
+         KEEP(20) = INODE_FATH
+       ENDIF
+      RETURN
+      END SUBROUTINE CMUMPS_SPLIT_ROOT
       SUBROUTINE CMUMPS_ANA_GNEW
      & (N, NZ, IRN, ICN, IW, LW, IPE, LEN,
      & IQ, FLAG, IWFR,
@@ -3186,7 +3256,8 @@ C
       INTEGER(8), intent(in) :: NZ
       INTEGER, intent(in)    :: ICNTL(60)
       INTEGER, intent(in)    :: IRN(NZ), ICN(NZ) 
-      INTEGER, intent(out)   :: IERROR, symmetry
+      INTEGER, intent(inout) :: IERROR
+      INTEGER, intent(out)   :: symmetry
       INTEGER, intent(out)   :: NBQD, AvgDens
       INTEGER, intent(out)   :: LEN(N), IW(LW)
       INTEGER(8), intent(out):: IWFR
@@ -3198,7 +3269,7 @@ C
       LOGICAL, intent(in)    :: PRINTSTAT
       LOGICAL, intent(inout) :: INPLACE64_GRAPH_COPY
       INTEGER    :: MP, MPG, I, J, N1
-      INTEGER    :: NBERR, THRESH
+      INTEGER    :: NBERR, THRESH, IERROR_LOC
       INTEGER(8) :: K8, K1, K2, LAST, NDUP
       INTEGER(8) :: NZOFFA, NDIAGA, L, N8
       REAL       :: RSYM
@@ -3207,7 +3278,7 @@ C
       MPG= ICNTL(3)
       NZOFFA = 0_8
       NDIAGA = 0
-      IERROR = 0
+      IERROR_LOC = 0
       N8     = int(N,8)
       DO I=1,N+1
         IPE(I) = 0_8
@@ -3219,7 +3290,7 @@ C
          J = ICN(K8)
          IF ((I.GT.N).OR.(J.GT.N).OR.(I.LT.1)
      &                          .OR.(J.LT.1)) THEN
-           IERROR = IERROR + 1
+           IERROR_LOC = IERROR_LOC + 1
          ELSE
           IF (I.NE.J) THEN
            IPE(I) = IPE(I) + 1_8
@@ -3235,7 +3306,7 @@ C
          J = ICN(K8)
          IF ((I.GT.N).OR.(J.GT.N).OR.(I.LT.1)
      &                          .OR.(J.LT.1)) THEN
-           IERROR = IERROR + 1
+           IERROR_LOC = IERROR_LOC + 1
          ELSE
           IF (I.NE.J) THEN
            IPE(I) = IPE(I) + 1_8
@@ -3274,41 +3345,42 @@ C
        ENDIF
       ENDIF
       NIORM  = NZOFFA + 3_8*N8
-      IF (IERROR.GE.1) THEN
+      IF ((IERROR_LOC.GE.1).AND.(mod(IFLAG,2) .EQ. 0)) THEN 
+        IFLAG  = IFLAG+1
+        IERROR = IERROR_LOC
+        IF ((MP.GT.0).AND.(ICNTL(4).GE.2))  THEN 
          NBERR  = 0
-         IF (mod(IFLAG,2) .EQ. 0) IFLAG = IFLAG+1
-         IF ((MP.GT.0).AND.(ICNTL(4).GE.2))  THEN 
-          WRITE (MP,99999) 
-          DO 70 K8=1_8,NZ
-           I = IRN(K8)
-           J = ICN(K8)
-           IF ((I.GT.N).OR.(J.GT.N).OR.(I.LT.1)
-     &                            .OR.(J.LT.1)) THEN
-            NBERR = NBERR + 1
-            IF (NBERR.LE.10)  THEN
-               IF (mod(K8,10_8).GT.3_8 .OR. mod(K8,10_8).EQ.0_8 .OR.
-     &             (10_8.LE.K8 .AND. K8.LE.20_8)) THEN
-                 WRITE (MP,'(I16,A,I10,A,I10,A)')
-     &             K8,'th entry (in row',I,' and column',J,') ignored'
-               ELSE
-                 IF (mod(K8,10_8).EQ.1_8) 
-     &             WRITE(MP,'(I16,A,I10,A,I10,A)')
-     &             K8,'st entry (in row',I,' and column',J,') ignored'
-                 IF (mod(K8,10_8).EQ.2_8) 
-     &             WRITE(MP,'(I16,A,I10,A,I10,A)')
-     &             K8,'nd entry (in row',I,' and column',J,') ignored'
-                 IF (mod(K8,10_8).EQ.3_8) 
-     &             WRITE(MP,'(I16,A,I10,A,I10,A)')
-     &             K8,'rd entry (in row',I,' and column',J,') ignored'
-               ENDIF
-            ELSE
-               GO TO 100
-            ENDIF
+         WRITE (MP,99999) 
+         DO K8=1_8,NZ
+          I = IRN(K8)
+          J = ICN(K8)
+          IF ((I.GT.N).OR.(J.GT.N).OR.(I.LT.1)
+     &                           .OR.(J.LT.1)) THEN
+           NBERR = NBERR + 1
+           IF (NBERR.LE.10)  THEN
+              IF (mod(K8,10_8).GT.3_8 .OR. mod(K8,10_8).EQ.0_8 .OR.
+     &            (10_8.LE.K8 .AND. K8.LE.20_8)) THEN
+                WRITE (MP,'(I16,A,I10,A,I10,A)')
+     &            K8,'th entry (in row',I,' and column',J,') ignored'
+              ELSE
+                IF (mod(K8,10_8).EQ.1_8) 
+     &            WRITE(MP,'(I16,A,I10,A,I10,A)')
+     &            K8,'st entry (in row',I,' and column',J,') ignored'
+                IF (mod(K8,10_8).EQ.2_8) 
+     &            WRITE(MP,'(I16,A,I10,A,I10,A)')
+     &            K8,'nd entry (in row',I,' and column',J,') ignored'
+                IF (mod(K8,10_8).EQ.3_8) 
+     &            WRITE(MP,'(I16,A,I10,A,I10,A)')
+     &            K8,'rd entry (in row',I,' and column',J,') ignored'
+              ENDIF
+           ELSE
+              EXIT
            ENDIF
-   70     CONTINUE
-         ENDIF
+          ENDIF
+         ENDDO   
+        ENDIF
       ENDIF
-  100 NRORM = NIORM - 2_8*N8
+      NRORM = NIORM - 2_8*N8
       IQ(1) = 1_8
       N1 = N - 1
       IF (N1.GT.0) THEN
@@ -3581,7 +3653,7 @@ C
      &         CMUMPS_MTRANSS,CMUMPS_MTRANSW
       INTRINSIC abs,log
       RINF = CNTL(2)
-      RINF2 = huge(RINF2)/real(2*N)
+      RINF2 = huge(RINF2)/real(int(2,8)*int(N,8))
       RINF3 = 0.0E0
       WARN1 = 0
       WARN2 = 0
@@ -3610,12 +3682,12 @@ C
          IF (ICNTL(1).GE.0) WRITE(ICNTL(1),9001) INFO(1),'NE',NE
          GO TO 99
       ENDIF
-      IF (JOB.EQ.1) K = int(4*N +   M,8)
-      IF (JOB.EQ.2) K = int(N + 2*M,8)
-      IF (JOB.EQ.3) K = int(8*N + 2*M + NE,8)
-      IF (JOB.EQ.4) K = int(N + M,8)
-      IF (JOB.EQ.5) K = int(3*N + 2*M,8)
-      IF (JOB.EQ.6) K = int(3*N + 2*M + NE,8)
+      IF (JOB.EQ.1) K = 4_8*int(N,8)+int(M,8)
+      IF (JOB.EQ.2) K = int(N,8) + 2_8*int(M,8)
+      IF (JOB.EQ.3) K = 8_8*int(N,8) + 2*int(M,8) + NE
+      IF (JOB.EQ.4) K = int(N,8) + int(M,8)
+      IF (JOB.EQ.5) K = 3_8*int(N,8) + 2_8*int(M,8)
+      IF (JOB.EQ.6) K = 3_8*int(N,8) + 2_8*int(M,8) + NE
       IF (LIW.LT.K) THEN
          INFO(1) = -4
          CALL MUMPS_SET_IERROR(K,INFO(2))
@@ -3623,11 +3695,11 @@ C
          GO TO 99
       ENDIF
       IF (JOB.GT.1) THEN
-         IF (JOB.EQ.2) K = int(      M,8)
+         IF (JOB.EQ.2) K = int(M,8)
          IF (JOB.EQ.3) K = int(1,8)
-         IF (JOB.EQ.4) K = int(    2*M,8)
-         IF (JOB.EQ.5) K = int(N + 2*M,8)
-         IF (JOB.EQ.6) K = int(N + 3*M,8)
+         IF (JOB.EQ.4) K = 2_8*int(M,8)
+         IF (JOB.EQ.5) K = int(N,8) + 2_8*int(M,8)
+         IF (JOB.EQ.6) K = int(N,8) + 3_8*int(M,8)
          IF (LDW .LT. K) THEN
             INFO(1) = -5
             CALL MUMPS_SET_IERROR(K,INFO(2))
@@ -3684,13 +3756,18 @@ C
             IW(J) = int(IP(J+1) - IP(J))
  10      CONTINUE
          CALL CMUMPS_MTRANSZ(M,N,IRN,NE,IP,IW(1),PERM,NUM,
-     &        IW(N+1),IW(2*N+1),IW(3*N+1),IW(3*N+M+1))
+     &        IW(    int(N,8)+1_8),
+     &        IW(2_8*int(N,8)+1_8),
+     &        IW(3_8*int(N,8)+1_8),
+     &        IW(3_8*int(N,8)+int(M,8)+1_8))
          GO TO 90
       ENDIF
       IF (JOB.EQ.2) THEN
          DW(1) = max(ZERO,CNTL(1))
          CALL CMUMPS_MTRANSB(M,N,NE,IP,IRN,A,PERM,NUM,
-     &        IW(1),IPQ8,IW(N+1),IW(N+M+1),DW,RINF2)
+     &        IW(1),IPQ8,IW(int(N,8)+1_8),
+     &        IW(int(N,8)+int(M,8)+1_8),
+     &        DW,RINF2)
          GO TO 90
       ENDIF
       IF (JOB.EQ.3) THEN
@@ -3699,16 +3776,21 @@ C
  20      CONTINUE
          CALL CMUMPS_MTRANSR(N,NE,IP,IW,A)
          FACT = max(ZERO,CNTL(1))
-         CALL CMUMPS_MTRANSS(M,N,NE,IP,IW(1),A,PERM,NUM,IW(NE+1),
-     &        IW(NE+N+1),IW(NE+2*N+1),IW(NE+3*N+1),IW(NE+4*N+1),
-     &        IW(NE+5*N+1),IW(NE+5*N+M+1),FACT,RINF2)
+         CALL CMUMPS_MTRANSS(M,N,NE,IP,IW(1),A,PERM,NUM,IW(NE+1_8),
+     &        IW(NE+int(N,8)+1_8),IW(NE+2_8*int(N,8)+1_8),
+     &        IW(NE+3_8*int(N,8)+1_8),
+     &        IW(NE+4_8*int(N,8)+1_8),
+     &        IW(NE+5_8*int(N,8)+1_8),
+     &        IW(NE+5_8*int(N,8)+int(M,8)+1_8),
+     &        FACT,RINF2)
          GO TO 90
       ENDIF
       IF ((JOB.EQ.4).OR.(JOB.EQ.5).or.(JOB.EQ.6)) THEN
-           ALLOCATE(IWtemp8(M+N+N), stat=allocok)
+           ALLOCATE(IWtemp8(int(M,8)+int(N,8)+int(N,8)), stat=allocok)
            IF (allocok.GT.0) THEN
              INFOMUMPS(1) = -7
-             INFOMUMPS(2) = M+N+N
+             CALL MUMPS_SET_IERROR( int(M,8)+int(N,8)+int(N,8),
+     &                               INFOMUMPS(2) )
              GOTO 90
            ENDIF
       ENDIF
@@ -3727,9 +3809,10 @@ C
          DW(2)      = RINF3
          IWtemp8(1) = int(JOB,8)
          CALL CMUMPS_MTRANSW(M,N,NE,IP,IRN,A,PERM,NUM,
-     &        IWtemp8(1),IW(1),IWtemp8(N+1),IPQ8,IW(N+1),
-     &        IWtemp8(2*N+1),
-     &        DW(1),DW(M+1),RINF2)
+     &        IWtemp8(1),IW(1),IWtemp8(int(N,8)+1_8),IPQ8,
+     &        IW(int(N,8)+1_8),
+     &        IWtemp8(2_8*int(N,8)+1_8),
+     &        DW(1),DW(int(M,8)+1_8),RINF2)
          DEALLOCATE(IWtemp8)  
          GO TO 90
       ENDIF
@@ -3741,7 +3824,7 @@ C
                DO 60 K = IP(J),IP(J+1)-1_8
                   IF (A(K).GT.FACT) FACT = A(K)
  60            CONTINUE
-               DW(2*M+J) = FACT
+               DW(2_8*int(M,8)+int(J,8)) = FACT
                IF (FACT.NE.ZERO) THEN
                   FACT = log(FACT)
                   IF(FACT .GT. RINF3) RINF3=FACT
@@ -3762,38 +3845,40 @@ C
          ENDIF
          IF (JOB.EQ.6) THEN
             DO 175 K = 1,NE
-               IW(3*N+2*M+K) = IRN(K)
+               IW(3_8*int(N,8)+2_8*int(M,8)+int(K,8)) = IRN(K)
  175        CONTINUE
             DO 61 I = 1,M
-               DW(2*M+N+I) = ZERO
+               DW(2_8*int(M,8)+int(N,8)+int(I,8)) = ZERO
  61         CONTINUE
             DO 63 J = 1,N
                DO 62 K = IP(J),IP(J+1)-1_8
                   I = IRN(K)
-                  IF (A(K).GT.DW(2*M+N+I)) THEN
-                     DW(2*M+N+I) = A(K)
+                  IF (A(K).GT.DW(2_8*int(M,8)+int(N,8)+int(I,8))) THEN
+                     DW(2_8*int(M,8)+int(N,8)+int(I,8)) = A(K)
                   ENDIF
  62            CONTINUE
  63         CONTINUE
             DO 64 I = 1,M
-               IF (DW(2*M+N+I).NE.ZERO) THEN
-                  DW(2*M+N+I) = 1.0E0/DW(2*M+N+I)
+               IF (DW(2_8*int(M,8)+int(N,8)+int(I,8)).NE.ZERO) THEN
+                   DW(2_8*int(M,8)+int(N,8)+int(I,8)) =
+     &                      1.0E0/DW(2_8*int(M,8)+int(N,8)+int(I,8))
                ENDIF
  64         CONTINUE
             DO 66 J = 1,N
                DO 65 K = IP(J),IP(J+1)-1
                   I = IRN(K)
-                  A(K) = DW(2*M+N+I) * A(K)
+                  A(K) = DW(2_8*int(M,8)+int(N,8)+int(I,8)) * A(K)
  65            CONTINUE
  66         CONTINUE
-            CALL CMUMPS_MTRANSR(N,NE,IP,IW(3*N+2*M+1),A)
+            CALL CMUMPS_MTRANSR(N,NE,IP,
+     &           IW(3_8*int(N,8)+2_8*int(M,8)+1_8),A)
             DO 176 J = 1,N
                IF (IP(J).NE.IP(J+1)) THEN
                   FACT = A(IP(J))
                ELSE
                   FACT = ZERO
                ENDIF
-               DW(2*M+J) = FACT
+               DW(2_8*int(M,8)+int(J,8)) = FACT
                IF (FACT.NE.ZERO) THEN
                   FACT = log(FACT)
                   DO 170 K = IP(J),IP(J+1)-1_8
@@ -3817,34 +3902,38 @@ C
          IWtemp8(1) = int(JOB,8)
           IF (JOB.EQ.5) THEN
          CALL CMUMPS_MTRANSW(M,N,NE,IP,IRN,A,PERM,NUM,
-     &        IWtemp8(1),IW(1),IWtemp8(N+1),IPQ8,IW(N+1),
-     &        IWtemp8(2*N+1),
-     &        DW(1),DW(M+1),RINF2)
+     &        IWtemp8(1),IW(1),IWtemp8(int(N,8)+1_8),IPQ8,
+     &        IW(int(N,8)+1_8),
+     &        IWtemp8(2_8*int(N,8)+1_8),
+     &        DW(1),DW(int(M,8)+1_8),RINF2)
          ENDIF
          IF (JOB.EQ.6) THEN
-         CALL CMUMPS_MTRANSW(M,N,NE,IP,IW(3*N+2*M+1),A,PERM,NUM,
-     &        IWtemp8(1),IW(1),IWtemp8(N+1),IPQ8,IW(N+1),
-     &        IWtemp8(2*N+1),
-     &        DW(1),DW(M+1),RINF2)
+         CALL CMUMPS_MTRANSW(M,N,NE,IP,
+     &        IW(3_8*int(N,8)+2_8*int(M,8)+1_8),A,PERM,NUM,
+     &        IWtemp8(1),IW(1),IWtemp8(int(N,8)+1_8),IPQ8,
+     &        IW(int(N,8)+1_8),
+     &        IWtemp8(2_8*int(N,8)+1_8),
+     &        DW(1),DW(int(M,8)+1_8),RINF2)
          ENDIF
          IF ((JOB.EQ.5).or.(JOB.EQ.6)) THEN
           DEALLOCATE(IWtemp8)
          ENDIF
          IF (JOB.EQ.6) THEN
-            DO 79 I = 1,M
-               IF (DW(2*M+N+I).NE.0.0E0) THEN
-                  DW(I) = DW(I) + log(DW(2*M+N+I))
-               ENDIF
- 79         CONTINUE
+           DO 79 I = 1,M
+             IF (DW(2_8*int(M,8)+int(N,8)+int(I,8)).NE.0.0E0) THEN
+               DW(I) = DW(I) + log(DW(2_8*int(M,8)+int(N,8)+int(I,8)))
+             ENDIF
+ 79        CONTINUE
          ENDIF
          IF (NUM.EQ.N) THEN
-            DO 80 J = 1,N
-               IF (DW(2*M+J).NE.ZERO) THEN
-                  DW(M+J) = DW(M+J) - log(DW(2*M+J))
-               ELSE
-                  DW(M+J) = ZERO
-               ENDIF
- 80         CONTINUE
+           DO 80 J = 1,N
+             IF (DW(2_8*int(M,8)+int(J,8)).NE.ZERO) THEN
+               DW(int(M,8)+int(J,8)) = DW(int(M,8)+int(J,8)) -
+     &                                 log(DW(2_8*int(M,8)+int(J,8)))
+             ELSE
+               DW(int(M,8)+int(J,8)) = ZERO
+             ENDIF
+ 80        CONTINUE
          ENDIF
          FACT = 0.5E0*log(RINF2)
          DO 86 I = 1,M
@@ -3880,13 +3969,15 @@ C
                WRITE(ICNTL(3),9032) (PERM(J),J=1,min(10,M))
                IF (JOB.EQ.5 .OR. JOB.EQ.6) THEN
                   WRITE(ICNTL(3),9033) (DW(J),J=1,min(10,M))
-                  WRITE(ICNTL(3),9034) (DW(M+J),J=1,min(10,N))
+                  WRITE(ICNTL(3),9034) (DW(int(M,8)+int(J,8)),
+     &                                  J=1,min(10,N))
                ENDIF
             ELSEIF (ICNTL(4).EQ.1) THEN
                WRITE(ICNTL(3),9032) (PERM(J),J=1,M)
                IF (JOB.EQ.5 .OR. JOB.EQ.6) THEN
                   WRITE(ICNTL(3),9033) (DW(J),J=1,M)
-                  WRITE(ICNTL(3),9034) (DW(M+J),J=1,N)
+                  WRITE(ICNTL(3),9034) (DW(int(M,8)+int(J,8)),
+     &                                  J=1,N)
                ENDIF
             ENDIF
          ENDIF
@@ -4053,19 +4144,22 @@ C
      &          FILS_OLD, FILS_NEW, NSTEPS,
      &          STEP_OLD, STEP_NEW, PAR2_NODES, NB_NIV2,
      &          DAD_STEPS, FRERE_STEPS, 
-     &          NA, LNA, LRGROUPS_OLD, LRGROUPS_NEW, 
-     &          K20, K38
+     &          NA, LNA, 
+     &          LRGROUPS_OLD, SIZELRGROUPS_OLD,
+     &          LRGROUPS_NEW, SIZELRGROUPS_NEW,
+     &          K20, K38, K494
      &           ) 
       IMPLICIT NONE
       INTEGER, INTENT(IN)    ::  N, NBLK, ICNTL(60), NSTEPS, LNA, 
-     &                           NB_NIV2
+     &                           NB_NIV2, K494
       INTEGER, INTENT(IN)    ::  BLKPTR(NBLK+1), BLKVAR(N)
+      INTEGER, INTENT(IN)    ::  SIZELRGROUPS_OLD, SIZELRGROUPS_NEW
       INTEGER, INTENT(IN)    ::  FILS_OLD(NBLK), STEP_OLD(NBLK), 
-     &                           LRGROUPS_OLD(NBLK)
-      INTEGER, INTENT(OUT)   ::  FILS_NEW(N), STEP_NEW(N), 
-     &                           LRGROUPS_NEW(N)
+     &                           LRGROUPS_OLD(SIZELRGROUPS_OLD)
       INTEGER, INTENT(INOUT) ::  DAD_STEPS(NSTEPS), FRERE_STEPS(NSTEPS)
-      INTEGER, INTENT(INOUT) ::  NA(LNA), PAR2_NODES(NB_NIV2), K20, K38
+      INTEGER, INTENT(INOUT) ::  NA(LNA), PAR2_NODES(NB_NIV2), K20,K38
+      INTEGER, INTENT(OUT)   ::  FILS_NEW(N), STEP_NEW(N), 
+     &                           LRGROUPS_NEW(SIZELRGROUPS_NEW)
       INTEGER :: IB, I, IBFS, IBNB, IFS, INB
       INTEGER NBLEAF, NBROOT, ISTEP, IGROUP
       INTEGER :: II
@@ -4138,13 +4232,15 @@ C
           ENDDO
         ENDIF
       ENDDO
-      DO IB=1, NBLK
-        IGROUP = LRGROUPS_OLD(IB)
-        IF (BLKPTR(IB+1)-BLKPTR(IB).EQ.0) CYCLE
-        DO II=BLKPTR(IB), BLKPTR(IB+1)-1
+      IF (K494.NE.0) THEN
+        DO IB=1, NBLK
+          IGROUP = LRGROUPS_OLD(IB)
+          IF (BLKPTR(IB+1)-BLKPTR(IB).EQ.0) CYCLE
+          DO II=BLKPTR(IB), BLKPTR(IB+1)-1
            LRGROUPS_NEW(BLKVAR(II)) =  IGROUP
+          ENDDO
         ENDDO
-      ENDDO
+      ENDIF
       RETURN
       END SUBROUTINE CMUMPS_EXPAND_TREE_STEPS
       SUBROUTINE CMUMPS_DIST_AVOID_COPIES(N,NSLAVES,
@@ -4164,6 +4260,7 @@ C
       REAL PEAK
       INTEGER, intent(IN) :: LSIZEOFBLOCKS
       INTEGER, intent(IN) :: SIZEOFBLOCKS(LSIZEOFBLOCKS)
+      CALL MUMPS_SET_K78_83_91 (NSLAVES,KEEP(78),KEEP(83),KEEP(91))
       CALL MUMPS_DISTRIBUTE(N,NSLAVES,
      &     ICNTL,INFOG, NE, NFSIZ,
      &     FRERE, FILS,

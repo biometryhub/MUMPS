@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -24,7 +24,8 @@ C
      &            )
       USE MUMPS_ANA_ORD_WRAPPERS
       IMPLICIT NONE
-      INTEGER, INTENT(IN)    :: N,  NELT, SIZE_SCHUR, NSLAVES, LIW
+      INTEGER, INTENT(IN)    :: N,  NELT, SIZE_SCHUR, NSLAVES
+      INTEGER(8), INTENT(IN) :: LIW
       INTEGER, INTENT(IN)    :: ELTPTR(NELT+1) 
       INTEGER, INTENT(IN)    :: ELTVAR(ELTPTR(NELT+1)-1)
       INTEGER, INTENT(IN)    :: LISTVAR_SCHUR(SIZE_SCHUR)
@@ -38,7 +39,8 @@ C
 #if defined(metis) || defined(parmetis) || defined(metis4) || defined(parmetis3)      
       INTEGER, INTENT(IN)    :: METIS_OPTIONS(40)
 #endif
-      INTEGER K,I,L1,L2,NCMPA,IFSON,IN
+      INTEGER K,I,NCMPA,IFSON,IN
+      INTEGER(8) :: L1, L2
       INTEGER NEMIN, MPRINT, LP, MP, LDIAG
       INTEGER(8)  :: NZ8, LLIW8, IWFR8
       INTEGER allocok, ITEMP
@@ -46,6 +48,8 @@ C
       INTEGER(8) :: K79REF
       PARAMETER(K79REF=12000000_8)
       LOGICAL SPLITROOT
+      INTEGER HOW_TO_SPLIT_ROOT, INODE_Scalapack_CAND, 
+     &        NBSONS_Scalapack_CAND
       INTEGER, PARAMETER :: LIDUMMY = 1
       INTEGER :: IDUMMY(1) 
       INTEGER, DIMENSION(:), ALLOCATABLE :: IW
@@ -70,13 +74,10 @@ C
      &         SMUMPS_ANA_K,
      &         SMUMPS_ANA_LNEW, SMUMPS_ANA_M,
      &         MUMPS_AMD_ELT
-#if defined(OLDDFS)
-      EXTERNAL SMUMPS_ANA_L
-#endif
         ALLOCATE( IW ( LIW ), stat = allocok )
         IF ( allocok .GT. 0 ) THEN
           INFO( 1 ) = -7
-          INFO( 2 ) = LIW
+          CALL MUMPS_SET_IERROR(LIW, INFO( 2 ))
           GOTO 90 
         ENDIF
         ALLOCATE( IPE8 ( N + 1 ), stat = allocok )
@@ -88,7 +89,7 @@ C
         ALLOCATE( PARENT(N), IWtemp ( N, 3 ), stat = allocok )
         IF ( allocok .GT. 0 ) THEN
           INFO( 1 ) = -7
-          INFO( 2 ) = 4*N
+          CALL MUMPS_SET_IERROR(4_8*int(N,8), INFO( 2 ))
           GOTO 90 
         ENDIF
       MPRINT= ICNTL(3)
@@ -121,42 +122,42 @@ C
       NEMIN = KEEP(1)
       IF (LDIAG.LE.2 .OR. MP.LE.0) GO TO 10
       WRITE (MP,99999) N, NELT, LIW, INFO(1)
-      K = min0(10,NELT+1)
+      K = min(10,NELT+1)
       IF (LDIAG.EQ.4) K = NELT+1
       IF (K.GT.0) WRITE (MP,99998) (ELTPTR(I),I=1,K)
-      K = min0(10,ELTPTR(NELT+1)-1)
+      K = min(10,ELTPTR(NELT+1)-1)
       IF (LDIAG.EQ.4) K = ELTPTR(NELT+1)-1
       IF (K.GT.0) WRITE (MP,99995) (ELTVAR(I),I=1,K)
-      K = min0(10,N)
+      K = min(10,N)
       IF (LDIAG.EQ.4) K = N
       IF (IORD.EQ.1 .AND. K.GT.0) THEN
         WRITE (MP,99997) (IKEEP(I,1),I=1,K)
       ENDIF
-   10 L1 = 1
-      L2 = L1 + N
-      IF (LIW .LT. 3*N) THEN
+   10 L1 = 1_8
+      L2 = L1 + int(N,8)
+      IF (LIW .LT. 3_8*int(N,8)) THEN
           INFO(1) = -2002
-          INFO(2) = LIW
+          CALL MUMPS_SET_IERROR( LIW, INFO(2) )
       ENDIF
 #if defined(metis) || defined(parmetis) || defined(metis4) || defined(parmetis3)
       IF ( IORD == 5 ) THEN
-        IF (LIW .LT. N+N+1) THEN
+        IF (LIW .LT. int(N,8)+int(N,8)+1_8) THEN
           INFO(1)= -2002
-          INFO(2) = LIW
+          CALL MUMPS_SET_IERROR( LIW, INFO(2) )
           GOTO 90 
         ENDIF
       ELSE
 #endif
       IF (NOSUPERVAR) THEN
-        IF ( LIW .LT. 2*N ) THEN
+        IF ( LIW .LT. 2_8*int(N,8) ) THEN
           INFO(1)= -2002
-          INFO(2) = LIW
+          CALL MUMPS_SET_IERROR( LIW, INFO(2) )
           GOTO 90 
         END IF
       ELSE
-        IF ( LIW .LT.  4*N+4 ) THEN
+        IF ( LIW .LT.  4_8*int(N,8)+4_8 ) THEN
           INFO(1)= -2002
-          INFO(2) = LIW
+          CALL MUMPS_SET_IERROR( LIW, INFO(2) )
           GOTO 90 
         END IF
       ENDIF
@@ -173,9 +174,9 @@ C
      &              ELTPTR, ELTVAR, XNODEL, NODEL,
      &              IWtemp(1,2), IW(L1))
         ELSE
-         CALL SMUMPS_ANA_G11_ELT(N, NZ8, NELT, ELTPTR(NELT+1)-1, 
+          CALL SMUMPS_ANA_G11_ELT(N, NZ8, NELT, ELTPTR(NELT+1)-1, 
      &              ELTPTR, ELTVAR, XNODEL, NODEL,
-     &              IWtemp(1,2), 4*N+4, IW(L1))
+     &              IWtemp(1,2), 4_8*int(N,8)+4_8, IW(L1))
         ENDIF
         LLIW8 = max(NZ8,int(N,8))
         ALLOCATE( IW2(LLIW8), stat = allocok )
@@ -291,15 +292,15 @@ C
         ENDIF
 #endif
        DO K=1,N
-         IW(L1+K) = 0
+         IW(L1+int(K,8)) = 0
        ENDDO
        DO K=1,N
          IF ((IKEEP(K,1).LE.0).OR.(IKEEP(K,1).GT.N)) 
      &    GO TO 40
-         IF (IW(L1+IKEEP(K,1)).EQ.1) THEN
+         IF (IW(L1+int(IKEEP(K,1),8)).EQ.1) THEN
           GOTO 40
          ELSE
-          IW(L1+IKEEP(K,1)) = 1
+          IW(L1+int(IKEEP(K,1),8)) = 1
          ENDIF
        ENDDO
        CALL SMUMPS_ANA_J1_ELT(N, NZ8, NELT, ELTPTR(NELT+1)-1,
@@ -333,20 +334,15 @@ C
      &    IKEEP(1,2), IW(L1),
      &    IW(L2), NCMPA, ITEMP, IWtemp)
       ENDIF
-#if defined(OLDDFS)
-      CALL SMUMPS_ANA_L(N, IWtemp, IW(L1), IKEEP, IKEEP(1,2),
-     &     IKEEP(1,3),
-     &     NFSIZ, INFO(6), FILS, FRERE, IWtemp(1,3), NEMIN, KEEP(60))
-#else
       CALL SMUMPS_ANA_LNEW(N, IWtemp, IW(L1), IKEEP, IKEEP(1,2),
      &     IKEEP(1,3),
      &     NFSIZ, IWtemp(1,2), 
      &     INFO(6), FILS, FRERE, IWtemp(1,3), NEMIN, 
      &     IW(L2),  KEEP(60), KEEP(20), KEEP(38),
-     &     IW2,KEEP(104),IW(L2+N),KEEP(50),
-     &     ICNTL(13), KEEP(37), NSLAVES, KEEP(250).EQ.1,
-     &     .FALSE., IDUMMY, LIDUMMY)
-#endif
+     &     IW2,KEEP(104),IW(L2+int(N,8)),KEEP(50),
+     &     ICNTL(13), KEEP(37), KEEP(197), NSLAVES, KEEP(250).EQ.1,
+     &     .FALSE., IDUMMY, LIDUMMY, 
+     &     INODE_Scalapack_CAND, NBSONS_Scalapack_CAND, KEEP(11) )
       DEALLOCATE(IW2)
       IF (KEEP(60).NE.0) THEN
          IF (KEEP(60)==1) THEN
@@ -377,55 +373,90 @@ C
      &  KEEP(6), KEEP(226), KEEP(253))
       IF ( KEEP(53) .NE. 0 ) THEN
         CALL MUMPS_MAKE1ROOT( N, FRERE, FILS, NFSIZ, KEEP(20) )
+        INODE_Scalapack_CAND  = KEEP(20)
+        NBSONS_Scalapack_CAND = 1
       END IF
       IF ( KEEP(48) == 4 .OR.
      &   ( (KEEP(24).NE.0).AND.(KEEP8(21).GT.0_8) ) ) THEN
           CALL SMUMPS_SET_K821_SURFACE(KEEP8(21), KEEP(2),
      &    KEEP(48), KEEP(50), NSLAVES)
       END IF
-      IF (KEEP(210).LT.0.OR.KEEP(210).GT.2) KEEP(210)=0
-      IF (KEEP(210).EQ.0.AND.KEEP(201).GT.0) KEEP(210)=1 
-      IF (KEEP(210).EQ.0.AND.KEEP(201).EQ.0) KEEP(210)=2 
+      IF (KEEP(210).LT.1.OR.KEEP(210).GT.2) KEEP(210)=2
       IF (KEEP(210).EQ.2) KEEP8(79)=huge(KEEP8(79))
       IF (KEEP(210).EQ.1.AND.KEEP8(79).LE.0_8) THEN
         KEEP8(79)=K79REF * int(NSLAVES,8)
       ENDIF
-      IF (KEEP(79).EQ.0) THEN
-       IF (KEEP(210).EQ.1) THEN
-        SPLITROOT = .FALSE. 
-        IF ( KEEP(62).GE.1) THEN
-          IDUMMY(1)= -1
-          CALL SMUMPS_CUTNODES(N, FRERE, FILS, NFSIZ,
-     &                       IDUMMY, LIDUMMY, INFO(6),
-     &                       NSLAVES, KEEP,KEEP8, SPLITROOT,
-     &                       MP, LDIAG, INFO(1), INFO(2))
-          IF (INFO(1).LT.0) GOTO 90 
-          IF (PROK) THEN
-               WRITE(MP,*) " Number of split nodes in pre-splitting=",
-     &         KEEP(61)
+      IF (KEEP(11).EQ.0) THEN
+        IF (KEEP(79).EQ.0) THEN
+         IF (KEEP(210).EQ.1) THEN
+          SPLITROOT = .FALSE. 
+          IF ( KEEP(62).GE.1) THEN
+            IDUMMY(1)= -1
+            CALL SMUMPS_CUTNODES(N, FRERE, FILS, NFSIZ,
+     &                         IDUMMY, LIDUMMY, INFO(6),
+     &                         NSLAVES, KEEP,KEEP8, SPLITROOT,
+     &                         MP, LDIAG, INFO(1), INFO(2))
+            IF (INFO(1).LT.0) GOTO 90 
+            IF (PROK) THEN
+                 WRITE(MP,*) " Number of split nodes in pre-splitting=",
+     &           KEEP(61)
+            ENDIF
           ENDIF
+         ENDIF
         ENDIF
-       ENDIF
       ENDIF
-      SPLITROOT = ((ICNTL(13).GT.0 .AND. NSLAVES.GT.ICNTL(13)) .OR.
-     &     ICNTL(13).EQ.-1 )
+      HOW_TO_SPLIT_ROOT = 0 
+      SPLITROOT = ICNTL(13) .EQ. -1
+#if defined(NOSCALAPACK)
+      SPLITROOT = SPLITROOT .OR. NSLAVES.GT.0
+#else
+      SPLITROOT = SPLITROOT .OR.
+     &            (ICNTL(13).GT.0 .AND. NSLAVES .GT. ICNTL(13))
+#endif
+      HOW_TO_SPLIT_ROOT = 0 
+      IF (SPLITROOT.AND.KEEP(11).GT.0) HOW_TO_SPLIT_ROOT =1 
       IF (KEEP(53) .NE. 0) THEN
-         SPLITROOT = .TRUE.
+         SPLITROOT         = .TRUE.
+         IF (KEEP(11).GT.0) HOW_TO_SPLIT_ROOT = 2
       ENDIF
       SPLITROOT = (SPLITROOT.AND.( (KEEP(60).EQ.0) ))
+#if defined(NOSCALAPACK)
+#else
+      IF ( KEEP(11).GT.0) THEN 
+        IF (.NOT.SPLITROOT .AND. 
+     &    (KEEP(60).EQ.0).AND.   
+     &    ( (NFSIZ(INODE_Scalapack_CAND).GT.KEEP(37))
+     &      .AND.(ICNTL(13).LE.0) )
+     &    .AND.
+     &    (NBSONS_Scalapack_CAND.GT.KEEP(11)) 
+     &    ) THEN
+          HOW_TO_SPLIT_ROOT = 3
+          SPLITROOT=.TRUE.
+        ENDIF
+      ENDIF
+#endif
       IF (SPLITROOT) THEN
-         IDUMMY(1) = -1
-         CALL SMUMPS_CUTNODES(N, FRERE, FILS, NFSIZ,
-     &                    IDUMMY, LIDUMMY, INFO(6),
-     &                    NSLAVES, KEEP,KEEP8, SPLITROOT,
-     &                    MP, LDIAG, INFO(1), INFO(2))
-         IF (INFO(1).LT.0) GOTO 90 
-         IF ( KEEP(53) .NE. 0 ) THEN
-          CALL MUMPS_MAKE1ROOT( N, FRERE, FILS, NFSIZ, KEEP(20) )
-         ENDIF
+        IDUMMY(1) = -1
+        IF (KEEP(11).EQ.0) THEN
+          CALL SMUMPS_CUTNODES(N, FRERE(1), FILS(1), NFSIZ(1), 
+     &                     IDUMMY, LIDUMMY, INFO(6),
+     &                     NSLAVES, KEEP,KEEP8, SPLITROOT,
+     &                     MP, LDIAG, INFO(1), INFO(2))
+          IF (INFO(1).LT.0) GOTO 90 
+          IF ( KEEP(53) .NE. 0 ) THEN
+           CALL MUMPS_MAKE1ROOT( N, FRERE(1), FILS(1), NFSIZ(1),
+     &                           KEEP(20) )
+          ENDIF
+        ELSE
+         CALL SMUMPS_SPLIT_ROOT( NSLAVES,
+     &               HOW_TO_SPLIT_ROOT, INODE_Scalapack_CAND,
+     &               N, FRERE(1), FILS(1), NFSIZ(1), 
+     &               KEEP, KEEP8,
+     &               IDUMMY, LIDUMMY, INFO(6))
+        ENDIF
       ENDIF
       IF (LDIAG.GT.2 .AND. MP.GT.0) THEN
-         K = min0(10,N)
+         K = min(10,N)
          IF (LDIAG.EQ.4) K = N
          IF (K.GT.0) WRITE (MP,99997) (IKEEP(I,1),I=1,K)
          IF (K.GT.0) WRITE (MP,99991) (IKEEP(I,2),I=1,K)
@@ -741,6 +772,7 @@ C
       TYPE_PARALL = KEEP(46)
       PTRAIW( 1:NELT ) = 0_8
       EARLYT3ROOTINS = KEEP(200) .EQ.0
+     &        .OR.  ( KEEP(200) .LT. 0 .AND. KEEP(400) .EQ. 0 )
       DO I = 1, N
         IF (STEP(I).LT.0) CYCLE
         ITYPE = MUMPS_TYPENODE( PROCNODE(abs(STEP(I))), KEEP(199) )
@@ -817,6 +849,7 @@ C
       LOGICAL :: EARLYT3ROOTINS 
       INTEGER, EXTERNAL :: MUMPS_TYPENODE, MUMPS_PROCNODE
       EARLYT3ROOTINS = KEEP(200) .EQ.0
+     &        .OR.  ( KEEP(200) .LT. 0 .AND. KEEP(400) .EQ. 0 )
       DO ELT = 1, NELT
           I = ELTPROC(ELT)
           IF ( I .NE. 0) THEN
@@ -959,7 +992,8 @@ C
      &  XELNOD, ELNOD, XNODEL, NODEL, 
      &  LEN, LW, IW)
       IMPLICIT NONE
-      INTEGER N,NELT,NELNOD,LW
+      INTEGER N,NELT,NELNOD
+      INTEGER(8) :: LW
       INTEGER(8), INTENT(OUT) :: NZ
       INTEGER XELNOD(NELT+1), ELNOD(NELNOD)
       INTEGER LEN(N)
@@ -970,7 +1004,8 @@ C
       EXTERNAL SMUMPS_SUPVAR
       LP = 6
       CALL SMUMPS_SUPVAR(N,NELT,XELNOD(NELT+1)-1,ELNOD,XELNOD,
-     &           NSUP,IW(3*N+3+1),3*N+3,IW,LP,INFO44)
+     &           NSUP,IW(3_8*int(N,8)+3_8+1_8),
+     &           3_8*int(N,8)+3_8,IW,LP,INFO44)
       IF (INFO44(1) .LT. 0) THEN
         IF (LP.GE.0) WRITE(LP,*) 
      &     'Error return from SMUMPS_SUPVAR. INFO(1) = ',INFO44(1) 
@@ -978,7 +1013,7 @@ C
       IW(1:NSUP) = 0
       LEN(1:N) = 0
       DO I = 1,N
-        SUPVAR = IW(3*N+3+1+I)
+        SUPVAR = IW(3_8*int(N,8)+3_8+1_8+int(I,8))
         IF (SUPVAR .EQ. 0) CYCLE
         IF (IW(SUPVAR).NE.0) THEN
           LEN(I) = -IW(SUPVAR)
@@ -986,7 +1021,7 @@ C
           IW(SUPVAR) = I
         ENDIF
       ENDDO
-      IW(N+1:2*N) = 0
+      IW(int(N+1,8):2_8*int(N,8)) = 0
       NZ = 0_8
       DO SUPVAR = 1,NSUP
         I = IW(SUPVAR)
@@ -996,8 +1031,8 @@ C
             J = ELNOD(K3)
             IF ((J.GE.1) .AND. (J.LE.N)) THEN
               IF (LEN(J).GE.0) THEN
-                IF ((I.NE.J) .AND. (IW(N+J).NE.I)) THEN
-                  IW(N+J) = I
+                IF ((I.NE.J) .AND. (IW(int(N,8)+int(J,8)).NE.I)) THEN
+                  IW(int(N,8)+int(J,8)) = I
                   LEN(I) = LEN(I) + 1
                 ENDIF
               ENDIF
@@ -1053,12 +1088,12 @@ C
       END SUBROUTINE SMUMPS_ANA_G12_ELT
       SUBROUTINE SMUMPS_SUPVAR(N,NELT,NZ,ELTVAR,ELTPTR,NSUP,SVAR,
      &                 LIW,IW,LP,INFO)
-      INTEGER LIW,LP,N,NELT,NSUP,NZ
+      INTEGER LP,N,NELT,NSUP,NZ
+      INTEGER(8)::LIW
       INTEGER INFO(6)
       INTEGER ELTPTR(NELT+1),ELTVAR(NZ)
       INTEGER IW(LIW),SVAR(0:N)
-      INTEGER FLAG,NEW,VARS
-      EXTERNAL SMUMPS_SUPVARB
+      INTEGER(8) :: FLAG,NEW,VARS
       INFO(1) = 0
       INFO(2) = 0
       INFO(3) = 0
@@ -1067,19 +1102,20 @@ C
       IF (NELT.LT.1) GO TO 20
       IF (NZ.LT.ELTPTR(NELT+1)-1) GO TO 30
       IF (LIW.LT.6) THEN
-         INFO(4) = 3*N + 3
+         INFO(4) = N + 1
          GO TO 40
       END IF
-      NEW = 1
-      VARS = NEW + LIW/3
-      FLAG = VARS + LIW/3
-      CALL SMUMPS_SUPVARB(N,NELT,ELTPTR,NZ,ELTVAR,SVAR,NSUP,LIW/3-1,
+      NEW = 1_8
+      VARS = NEW + LIW/3_8
+      FLAG = VARS + LIW/3_8
+      CALL SMUMPS_SUPVARB(N,NELT,ELTPTR,NZ,ELTVAR,SVAR,NSUP,
+     &           int(min(int(huge(NSUP)-1,8),LIW/3_8-1_8)),
      &           IW(NEW),IW(VARS),IW(FLAG),INFO)
       IF (INFO(1).EQ.-4) THEN
-         INFO(4) = 3*N + 3
+         INFO(4) = N + 1
          GO TO 40
       ELSE
-         INFO(4) = 3*NSUP + 3
+         INFO(4) = NSUP + 1
       END IF
       GO TO 50
    10 INFO(1) = -1
@@ -1094,12 +1130,12 @@ C
    40 INFO(1) = -4
       IF (LP.GT.0) THEN
          WRITE (LP,FMT=9000) INFO(1)
-         WRITE (LP,FMT=9010) INFO(4)
+         WRITE (LP,FMT=9010) 3_8*int(INFO(4),8)
       END IF
    50 RETURN
  9000 FORMAT (/3X,'Error message from SMUMPS_SUPVAR: INFO(1) = ',I2)
  9010 FORMAT (3X,'LIW is insufficient. Upper bound on required work',
-     &       'space is ',I8)
+     &       'space is ',I12)
       END SUBROUTINE SMUMPS_SUPVAR
       SUBROUTINE SMUMPS_SUPVARB( N, NELT, ELTPTR, NZ, ELTVAR,
      &           SVAR, NSUP, MAXSUP, NEW, VARS, FLAG, INFO )

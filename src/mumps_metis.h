@@ -1,10 +1,10 @@
 /*
  *
- *  This file is part of MUMPS 5.4.0, released
- *  on Tue Apr 13 15:26:30 UTC 2021
+ *  This file is part of MUMPS 5.7.0, released
+ *  on Tue Apr 23 10:25:09 UTC 2024
  *
  *
- *  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+ *  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
  *  Mumps Technologies, University of Bordeaux.
  *
  *  This version of MUMPS is provided to you free of charge. It is
@@ -26,6 +26,15 @@ MUMPS_PARMETIS(MUMPS_INT *first,      MUMPS_INT *vertloctab,
                MUMPS_INT *edgeloctab, MUMPS_INT *numflag,
                MUMPS_INT *options,    MUMPS_INT *order,
                MUMPS_INT *sizes,      MUMPS_INT *comm,
+               MUMPS_INT *ierr);
+#define MUMPS_PARMETIS_VWGT \
+  F_SYMBOL(parmetis_vwgt,PARMETIS_VWGT)
+void MUMPS_CALL
+MUMPS_PARMETIS_VWGT(MUMPS_INT *first,      MUMPS_INT *vertloctab,
+               MUMPS_INT *edgeloctab, MUMPS_INT *numflag,
+               MUMPS_INT *options,    MUMPS_INT *order,
+               MUMPS_INT *sizes,      MUMPS_INT *comm,
+               MUMPS_INT *vwgt,
                MUMPS_INT *ierr);
 #endif
 #if defined(parmetis) || defined(metis) || defined(parmetis3) || defined(metis4)

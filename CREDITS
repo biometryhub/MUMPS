@@ -6,6 +6,9 @@ Jacko Koster, Jean-Yves L'Excellent, Theo Mary, Stephane Pralet, Chiara
 Puglisi, Francois-Henry Rouet, Wissam Sid-Lakhdar, Tzvetomila Slavova,
 Bora Ucar and Clement Weisbecker.
 
+Since January 2019, the MUMPS solver is maintained by Mumps Technologies
+(http://mumps-tech.com).
+
 We are grateful to Caroline Bousquet, Indranil Chowdhury, Christophe Daniel,
 Iain Duff, Vincent Espirat, Gilles Moreau, Gregoire Richard, Alexis Salzman, 
 Miroslav Tuma and Christophe Voemel who have been contributing to this project.
@@ -15,8 +18,7 @@ at the University of Paderborn. We thank Eddy Caron for the administration of a
 server used on a daily basis for MUMPS.
 
 We want to thank the French ANR programme, the European community, 
-Airbus Group-IW, Altair, CINES, EDF, EMGS, ESI Group, FFT, LBNL, LSTC, 
-Michelin, SAFRAN, SAMTECH, Shell, Siemens, Total for their support. 
+Airbus Group-IW, Altair, ANSYS, CINES, EDF, EMGS, ESI Group, FFT/Hexagon, LBNL, LSTC, Michelin, NEC, SAFRAN, SAMTECH, Shell, Siemens, Total for their support. 
 We also thank LBNL, LSTC, PARALLAB and the Rutherford Appleton Laboratory 
 for research discussions that have certainly influenced this work. 
 

@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -44,13 +44,22 @@ C
         IORD = 7
       END IF
 #endif
+      IF (IORD.EQ.4.AND.N.EQ.1) THEN
+        IF (PROK) WRITE(MP,*)
+     &  'WARNING: PORD not available for matrices of order 1'
+       IORD=0
+      ENDIF
       IF (IORD.EQ.7) THEN
         IF (SYM.NE.0) THEN
           IF ( N.LE.SMALLSYM ) THEN 
              IF (NBQD.GE.MAXQD) THEN
                IORD = 6         
              ELSE
+              IF (KEEP(53).GT.0) THEN
+                IORD = 0
+              ELSE
                IORD = 2         
+              ENDIF
              ENDIF
           ELSE
 #if  defined(metis) || defined(parmetis) || defined(metis4) || defined(parmetis3)
@@ -72,7 +81,11 @@ C
             IF (NBQD.GE.MAXQD) THEN
               IORD = 6  
             ELSE
+              IF (KEEP(53).GT.0) THEN
+                IORD = 0
+              ELSE
               IORD = 2   
+              ENDIF
             ENDIF
           ELSE
 #if  defined(metis) || defined(parmetis) || defined(metis4) || defined(parmetis3)
@@ -91,5 +104,6 @@ C
           ENDIF
         ENDIF
       ENDIF
+      IF (IORD.EQ.4.AND.N.EQ.1) IORD=0
       RETURN
       END SUBROUTINE MUMPS_SET_ORDERING

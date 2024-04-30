@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -11,6 +11,11 @@ C  released under the CeCILL-C license
 C  (see doc/CeCILL-C_V1-en.txt, doc/CeCILL-C_V1-fr.txt, and
 C  https://cecill.info/licences/Licence_CeCILL-C_V1-en.html)
 C
+#if defined(__ve__)
+#if defined(VHOFFLOAD)
+#include 've.h'
+#endif
+#endif
       SUBROUTINE SMUMPS_INI_DRIVER( id )
       USE SMUMPS_STRUC_DEF
 C
@@ -26,6 +31,10 @@ C
       INTEGER MASTER, IERR,PAR_loc,SYM_loc
       PARAMETER( MASTER = 0 )
       INTEGER color
+#if defined(metis) || defined(parmetis)
+      INTEGER I
+#endif
+      INTEGER(8) :: I8
 C     -----------------------------
 C     Initialize MPI related data
 C     -----------------------------
@@ -77,12 +86,16 @@ C     ----------------------------------------------
      &    id%KEEP(1), id%KEEP8(1), id%INFO(1), id%INFOG(1),
      &    id%RINFO(1), id%RINFOG(1),
      &    SYM_loc, PAR_loc, id%DKEEP(1), id%MYID )
+      CALL MUMPS_BUILD_ARCH_NODE_COMM( id%COMM, id%KEEP(411),
+     &     id%KEEP(412), id%KEEP(413), id%KEEP(410) )
       id%WRITE_PROBLEM="NAME_NOT_INITIALIZED"
       CALL MUMPS_SET_VERSION( id%VERSION_NUMBER )
       id%OOC_TMPDIR="NAME_NOT_INITIALIZED"
       id%OOC_PREFIX="NAME_NOT_INITIALIZED"
+#if ! defined(NO_SAVE_RESTORE)
       id%SAVE_DIR="NAME_NOT_INITIALIZED"
       id%SAVE_PREFIX="NAME_NOT_INITIALIZED"
+#endif
 C     Default value for NRHS is 1
       id%NRHS = 1
 C     Leading dimension will be reset to id%N is SMUMPS_SOL_DRIVER
@@ -111,13 +124,11 @@ C     set to default options
 C     Useful size is 40  
 C     This sets the default values
       CALL METIS_SETDEFAULTOPTIONS(id%METIS_OPTIONS)
-C     This number, 18, corresponds to METIS_OPTIONS_NUMBERING which
-C     tells METIS to use fortran numbering and is found in metis.h
-C     In Metis 5.0.3 and Parmetis 4.0.2, METIS_OPTIONS_NUMBERING 
-C     was METIS_OPTIONS(17). MUMPS doesnot support those versions anymore.
-C     To use them, just change METIS_OPTIONS(18) into METIS_OPTIONS(17)
-C     like that: METIS_OPTIONS(17) = 1
-      id%METIS_OPTIONS(18) = 1
+      CALL MUMPS_METIS_OPTION_NUMBERING(I)
+C     The value of I corresponds to "METIS_OPTION_NUMBERING", which tells
+C     METIS to use Fortran numbering. METIS_OPTION_NUMBERING is defined
+C     in metis.h and accessed through a C wrapper.
+      id%METIS_OPTIONS(I+1) = 1 ! +1 for Fortran indexing
 #endif
 #endif      
 C
@@ -147,6 +158,8 @@ C
       NULLIFY(id%RHS_loc)
       NULLIFY(id%COLSCA)
       NULLIFY(id%ROWSCA)
+      NULLIFY(id%ROWSCA_loc)
+      NULLIFY(id%COLSCA_loc)
       NULLIFY(id%PERM_IN)
       NULLIFY(id%IS)
       NULLIFY(id%STEP)
@@ -165,6 +178,10 @@ C     Info for pruning tree
       NULLIFY(id%PIVNUL_LIST)
       NULLIFY(id%FILS)
       NULLIFY(id%PTRAR)
+      NULLIFY(id%PTR8ARR)
+      NULLIFY(id%NINCOLARR)
+      NULLIFY(id%NINROWARR)
+      NULLIFY(id%PTRDEBARR)
       NULLIFY(id%FRTPTR)
       NULLIFY(id%FRTELT)
       NULLIFY(id%NA)
@@ -173,8 +190,6 @@ C     Info for pruning tree
       NULLIFY(id%S)
       NULLIFY(id%PTLUST_S)
       NULLIFY(id%PTRFAC)
-      NULLIFY(id%INTARR) 
-      NULLIFY(id%DBLARR)
       NULLIFY(id%DEPTH_FIRST)
       NULLIFY(id%DEPTH_FIRST_SEQ)
       NULLIFY(id%SBTR_ID)
@@ -189,10 +204,11 @@ C     Info for pruning tree
       NULLIFY(id%MY_FIRST_LEAF)
       NULLIFY(id%MY_NB_LEAF)
       NULLIFY(id%COST_TRAV)
-      NULLIFY(id%RHSCOMP)
-      NULLIFY(id%POSINRHSCOMP_ROW)
-      NULLIFY(id%POSINRHSCOMP_COL)
-      id%POSINRHSCOMP_COL_ALLOC = .FALSE.
+      NULLIFY(id%RHSINTR)
+      id%LD_RHSINTR = 0
+      NULLIFY(id%GLOB2LOC_RHS)
+      NULLIFY(id%GLOB2LOC_SOL)
+      id%GLOB2LOC_SOL_ALLOC = .FALSE.
 C
 C     Out of Core management related data
 C
@@ -206,7 +222,7 @@ C
       NULLIFY(id%LRGROUPS)
       NULLIFY(id%FDM_F_ENCODING)
       NULLIFY(id%BLRARRAY_ENCODING)
-      NULLIFY(id%MPITOOMP_PROCS_MAP)
+      NULLIFY(id%MTKO_PROCS_MAP)
 C     Must be nullified because of routine
 C     SMUMPS_SIZE_IN_STRUCT
       NULLIFY(id%CB_SON_SIZE)
@@ -215,8 +231,7 @@ C     Components of the root
 C
       NULLIFY(id%root%RHS_CNTR_MASTER_ROOT)
       NULLIFY(id%root%RHS_ROOT)
-      NULLIFY(id%root%RG2L_ROW)
-      NULLIFY(id%root%RG2L_COL)
+      NULLIFY(id%root%RG2L)
       NULLIFY(id%root%IPIV)
       NULLIFY(id%root%SCHUR_POINTER)
       NULLIFY(id%SCHUR_CINTERFACE)
@@ -278,6 +293,14 @@ C
 C
 C     Initializations for Rank detection/null space
 C
+C         -----------------------------
+C         RCOND is a threshold such that:
+C                   A * P = Q * [ R11 R12 ]
+C                               [  0  R22 ]
+C         with R11 defined as the largest leading submatrix whose estimated
+C         condition number is less than 1/RCOND.
+C         -------------------------------------------
+      id%ROOT%QR_RCOND = 1.0E-06
       NULLIFY(id%SINGULAR_VALUES)
       CALL SMUMPS_RR_INIT_POINTERS(id)
 C     Architecture data
@@ -304,6 +327,22 @@ C     ----------------------------------------
      &         (id%COMM_NODES, id%MYID_NODES, IERR )
       ELSE
           id%MYID_NODES = -464646
+      ENDIF
+C
+C     Check that KEEP(34), the size of a Fortran INTEGER,
+C     as initialized above during SMUMPSID
+C     matches the size of an integer in C. If not,
+C     raise an error immediately.
+C
+      CALL MUMPS_INT_SIZE_C(I8)
+      IF (int(I8) .NE. id%KEEP(34)) THEN
+        id%INFO(1)=-69
+        id%INFO(2)=int(I8) ! size of MUMPS_INT
+C       Installation problem!
+C       WRITE on unit 6 since ICNTL(1:4) are not set by the user yet
+        IF (id%MYID .EQ. 0) WRITE(6,995) int(I8)
+ 995    FORMAT(' Installation error -69: ',
+     &' MUMPS_INT size (',I4,') incompatible with INTEGER size')
       ENDIF
       RETURN
       END SUBROUTINE SMUMPS_INI_DRIVER

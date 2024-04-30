@@ -1,22 +1,30 @@
 #
-#  This file is part of MUMPS 5.4.0, released
-#  on Tue Apr 13 15:26:30 UTC 2021
+#  This file is part of MUMPS 5.7.0, released
+#  on Tue Apr 23 10:25:09 UTC 2024
 #
-all: libmpiseq
+all: staticlibmpiseq
 
-.PHONY: all libmpiseq clean
+.PHONY: all staticlibmpiseq sharedlibmpiseq clean
 
-include ../Makefile.inc
+topdir = ..
+include $(topdir)/Makefile.inc
 
-libmpiseq: libmpiseq$(PLAT)$(LIBEXT)
+staticlibmpiseq: libmpiseq$(PLAT)$(LIBEXT)
 
 libmpiseq$(PLAT)$(LIBEXT): mpi.o mpic.o elapse.o
 	$(AR)$@ mpi.o mpic.o elapse.o
 	$(RANLIB) $@
+
+sharedlibmpiseq:
+	$(MAKE) FPIC="$(FPIC_OPT)" libmpiseq$(PLAT)$(LIBEXT_SHARED)
+
+libmpiseq$(PLAT)$(LIBEXT_SHARED): mpi.o mpic.o elapse.o
+	$(FC) $(SHARED_OPT) mpi.o mpic.o elapse.o -o libmpiseq$(PLAT)$(LIBEXT_SHARED)
+
 .f.o:
-	$(FC) $(OPTF)              -c $*.f $(OUTF)$*.o
+	$(FC) $(OPTF) $(FPIC)              -c $*.f $(OUTF)$*.o
 .c.o:
-	$(CC) $(OPTC) $(CDEFS) -I. -c $*.c $(OUTC)$*.o
+	$(CC) $(OPTC) $(FPIC) $(CDEFS) -I. -c $*.c $(OUTC)$*.o
 
 clean:
 	$(RM) *.o *$(LIBEXT)

@@ -7818,6 +7818,15 @@ C           There is nothing left of this node except for an
 C           edge to the current pivot element.  elen (i) is 1,
 C           and there are no variables adjacent to node i.
 C           Absorb i into the current pivot element, me.
+             TOTO = I
+ 5911        IF(TOTO .NE. 0) THEN
+                J = CONSTRAINT(TOTO)
+                IF(J .GT. 0) THEN
+                   CONSTRAINT(J) = 0
+                ENDIF
+                TOTO = THESON(TOTO)
+                GOTO 5911
+             ENDIF
             PE (I) = int(-ME,8)
             NVI = -NV (I)
             DEGME = DEGME - NVI
@@ -8314,6 +8323,7 @@ C
 C     Internal Workspace only
       INTEGER, INTENT(OUT) :: NDENSE(N), DEGREE(N), 
      &                        HEAD(TOTEL), NEXT(N), W(N)
+CPA2JY: FIXME should HEAD/LAST (N) instead of TOTEL ?
 C
 C  =======================
 C  INTERFACE DOCUMENTATION
@@ -8354,8 +8364,8 @@ C       On output:  (PE is copied on output into PARENT array)
 C
 C  
 C NV(inout): 
-C          On input:  encoding of a blocked matrix if NV(1) = -1 
-C            NV(I) holds the weight of node I. 
+C          On input:  encoding of a blocked matrix 
+C            if NV(1).NE.-1 then NV(I) holds the weight of node I. 
 C          During execution, 
 C            abs (nv (i)) is equal to the number of rows
 C            that are represented by the principal supervariable i.  
@@ -8800,7 +8810,7 @@ C=======================================================================
            ELEN(1) = 1
            LAST(1) = 1
            PE(1) = 0_8
-           NV(1) = 1
+           IF (NV(1).LT.0) NV(1) = 1
            NCMPA = 0
            PARENT(1) = 0
            RETURN
@@ -8847,12 +8857,6 @@ C           (To be Tested it seperately)
              ThresMin  = N
              ThresPrev = N
       ELSE
-COLD         THRESM    = max(int(sqrt(dble(N)))+N/8+1, THRESM)
-COLD         THRESM    = max(THRESM,1)
-COLD         ThresMin  = max( THRESM / 8, 1)
-COLD         ThresPrev = THRESM
-COLD    ENDIF
-COLD    ThresMinINIT = ThresMin
              THRESM    = max(int(31*N/32),THRESM)
              THRESM    = max(THRESM,1)
 C
@@ -9038,8 +9042,8 @@ C       -------------------------------------------------------------
         ELSE
 C
 C         Because of restarting forced even if 
-C         variable (not yest quasi dense) but of 
-C         value of perm larger thatn thresm still
+C         variable (not yet quasi dense) but of 
+C         value of perm larger than thresm still
 C         to be eliminated we have to reset MINDEB to 1
           MINDEG = 1
           NBDM = max(NBDM,NBD)
@@ -9178,8 +9182,6 @@ C         amalgamate at the root node
            NELME    = -(NEL+1)
            DO 59 X=1,N
             IF ((PE(X).GT.0) .AND. (ELEN(X).LT.0)) THEN
-              PE(X) = int(-LISTVAR_SCHUR(1),8)
-            ELSE IF ((PE(X).GT.0) .AND. (ELEN(X).LT.0)) THEN
 C            X is an unabsorbed element
 C            -- Force sons to be linked to first node in Schur
              PE(X) = int(-LISTVAR_SCHUR(1),8)
@@ -9194,7 +9196,7 @@ C            X is a dense row, absorb it in ME (mass elimination)
             ENDIF
    59      CONTINUE
            IF (NbSchur.NE.SIZE_SCHUR_LOC) then
-             write(6,*) ' Internal error 2 in QAMD :',
+             write(6,*) ' Internal error 2 in MUMPS_SYMQAMD:',
      &         ' Schur size expected:',SIZE_SCHUR_LOC, 'Real:', NbSchur
              CALL MUMPS_ABORT()
            ENDIF
@@ -9203,7 +9205,7 @@ C          ME is the root node
            NV(ME)   = NBD
            PE(ME)   = 0_8
            IF (NEL.NE.N) THEN
-            write(6,*) 'Internal ERROR 2 detected in QAMD'
+            write(6,*) 'Internal error 3 detected in MUMPS_SYMQAMD:'
             write(6,*) ' NEL not equal to N: N, NEL =',N,NEL
             CALL MUMPS_ABORT()
            ENDIF

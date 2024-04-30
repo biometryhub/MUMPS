@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -24,6 +24,7 @@ C
      &    NSTK, COMP, IFLAG, IERROR, PERM,
      &    IPOOL, LPOOL, LEAF, NBFIN, SLAVEF,
      &    OPASSW, OPELIW, ITLOC, RHS_MUMPS, FILS, DAD, PTRARW, PTRAIW,
+     &    PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
      &    INTARR, DBLARR, ICNTL, KEEP,KEEP8,DKEEP, ND, FRERE,
      &    LPTRAR, NELT, FRTPTR, FRTELT, 
      &    ISTEP_TO_INIV2, TAB_POS_IN_PERE 
@@ -56,7 +57,7 @@ C
       INTEGER LIW
       INTEGER IW( LIW )
       COMPLEX A( LA )
-      INTEGER, intent(in) :: LRGROUPS(N)
+      INTEGER, intent(in) :: LRGROUPS(KEEP(280))
       INTEGER LPTRAR, NELT
       INTEGER FRTPTR( N+1 ), FRTELT( NELT )
       INTEGER(8) :: PTRAST(KEEP(28))
@@ -70,9 +71,13 @@ C
       INTEGER NBFIN, SLAVEF
       DOUBLE PRECISION OPASSW, OPELIW
       INTEGER ITLOC( N + KEEP(253) ), FILS( N ), DAD( KEEP(28) )
-      COMPLEX :: RHS_MUMPS(KEEP(255))
+      COMPLEX :: RHS_MUMPS(KEEP8(85))
       INTEGER ND( KEEP(28) )
       INTEGER(8), INTENT(IN) :: PTRARW( LPTRAR ), PTRAIW( LPTRAR )
+      INTEGER(8), INTENT(IN) :: PTR8ARR(KEEP(193))
+      INTEGER, INTENT(IN) :: NINCOLARR(KEEP(194))
+      INTEGER, INTENT(IN) :: NINROWARR(KEEP(195))
+      INTEGER, INTENT(IN) :: PTRDEBARR(KEEP(196))
       INTEGER FRERE(KEEP(28))
       INTEGER INTARR( KEEP8(27) )
       COMPLEX DBLARR( KEEP8(26) )
@@ -116,7 +121,8 @@ C
      &         (KEEP(486).EQ.2) 
      &       )
      &       .AND..NOT.COMPRESS_CB) THEN
-          CALL CMUMPS_BLR_END_FRONT(IW(IOLDPS+XXF), IFLAG, KEEP8)
+          CALL CMUMPS_BLR_END_FRONT(IW(IOLDPS+XXF), IFLAG, KEEP8,
+     &                              KEEP(34))
         ENDIF
         IW(IOLDPS+XXS)=S_ALL
          IOLDPS = PTRIST(STEP(INODE))
@@ -201,10 +207,11 @@ C
      &    NSTK, COMP, IFLAG, IERROR, PERM,
      &    IPOOL, LPOOL, LEAF, NBFIN, SLAVEF,
      &    OPASSW, OPELIW, ITLOC, RHS_MUMPS, FILS, DAD, PTRARW, PTRAIW,
+     &    PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
      &    INTARR,DBLARR,ICNTL,KEEP,KEEP8,DKEEP,.FALSE.,ND,FRERE,
      &    LPTRAR, NELT, FRTPTR, FRTELT, 
      &    ISTEP_TO_INIV2, TAB_POS_IN_PERE 
-     &               , LRGROUPS
+     &               , LRGROUPS, 0, 0, 0
      &    )
        IF ( IFLAG < 0 ) GOTO 600
        IF (NELIM.EQ.0) THEN
@@ -287,7 +294,9 @@ C
      &  NBFIN, ICNTL, KEEP,KEEP8,DKEEP,
      &  root, OPASSW, OPELIW,
      &  ITLOC, RHS_MUMPS,
-     &  FILS, DAD, PTRARW, PTRAIW, INTARR, DBLARR, ND, FRERE,
+     &  FILS, DAD, PTRARW, PTRAIW,
+     &  PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
+     &  INTARR, DBLARR, ND, FRERE,
      &  LPTRAR, NELT, FRTPTR, FRTELT, 
      &
      &  ISTEP_TO_INIV2, TAB_POS_IN_PERE 

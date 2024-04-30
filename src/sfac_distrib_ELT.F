@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -38,8 +38,6 @@ C
       REAL A( LA )
       TYPE(SMUMPS_STRUC)     :: id
       TYPE(SMUMPS_ROOT_STRUC) :: root
-      INTEGER numroc
-      EXTERNAL numroc
       INCLUDE 'mpif.h'
       INCLUDE 'mumps_tags.h'
       INTEGER :: IERR_MPI
@@ -50,7 +48,6 @@ C
       INTEGER NBRECORDS, NBUF
       INTEGER(8) :: RECV_IELTPTR8
       INTEGER(8) :: RECV_RELTPTR8
-      INTEGER INODE
       INTEGER(8) :: IELTPTR8, RELTPTR8
       LOGICAL FINI, PROKG, I_AM_SLAVE, EARLYT3ROOTINS
       INTEGER(8) :: PTR_ROOT
@@ -71,8 +68,6 @@ C
       REAL, DIMENSION( : ), ALLOCATABLE :: TEMP_ELT_R
       INTEGER, DIMENSION( : ), ALLOCATABLE :: TEMP_ELT_I
       INTEGER(8), DIMENSION( : ), ALLOCATABLE :: ELROOTPOS8
-      INTEGER, DIMENSION( : ), ALLOCATABLE, TARGET :: RG2LALLOC
-      INTEGER, DIMENSION( : ), POINTER     :: RG2L
       MPG = id%ICNTL(3)
       LP  = id%ICNTL(1)
       I_AM_SLAVE = ( KEEP(46) .eq. 1 .or. MYID .ne.MASTER )
@@ -81,6 +76,7 @@ C
       KEEP(49) = 0
       ARROW_ROOT = 0
       EARLYT3ROOTINS = KEEP(200) .EQ.0
+     &        .OR.  ( KEEP(200) .LT. 0 .AND. KEEP(400) .EQ. 0 )
       IF ( MYID .eq. MASTER ) THEN
         IF ( KEEP(46) .eq. 0 ) THEN
           NBUF = SLAVEF
@@ -141,24 +137,6 @@ C
               GOTO 100
             END IF
           ENDIF
-          IF (KEEP(46) .eq. 0 ) THEN
-           ALLOCATE( RG2LALLOC( N ), stat = allocok )
-           IF ( allocok .gt. 0 ) THEN
-               id%INFO(1) = -13
-               id%INFO(2) = N
-               GOTO 100
-           END IF
-           INODE = KEEP(38)
-           I     = 1
-           DO WHILE ( INODE .GT. 0 )
-             RG2LALLOC( INODE ) = I
-             INODE = FILS( INODE )
-             I = I + 1
-           END DO
-           RG2L => RG2LALLOC
-          ELSE 
-           RG2L => root%RG2L_ROW
-          END IF
         END IF
         DO I = 1, NBUF
           BUFI( 1, I ) = 0
@@ -313,7 +291,7 @@ C
           IELT = FRTELT( IPTR )
           SIZEI = id%ELTPTR( IELT + 1 ) - id%ELTPTR( IELT )
           DO I = 1, SIZEI
-            TEMP_ELT_I( I ) = RG2L
+            TEMP_ELT_I( I ) = root%RG2L
      &              ( id%ELTVAR( id%ELTPTR(IELT) + I - 1 ) )
           END DO
           IVALPTR8 = ELROOTPOS8( IPTR - FRTPTR(KEEP(38)) + 1 ) - 1
@@ -380,9 +358,9 @@ C
      &          + VAL
               ENDIF
               ELSE
-                CALL SMUMPS_ARROW_FILL_SEND_BUF(
+                CALL SMUMPS_ARROW_FILL_SEND_BUF_ELT(
      &          IPOSROOT, JPOSROOT, VAL, DEST, BUFI, BUFR, NBRECORDS,
-     &          NBUF, LP, COMM, KEEP(46) )
+     &          NBUF, LP, COMM )
               END IF
               K8 = K8 + 1_8
             END DO
@@ -443,11 +421,6 @@ C
         DEALLOCATE( BUFI )
         DEALLOCATE( BUFR )
         IF (allocated(ELROOTPOS8)) DEALLOCATE(ELROOTPOS8)
-        IF (KEEP(38).ne.0) THEN 
-          IF (KEEP(46) .eq. 0 ) THEN
-             DEALLOCATE(RG2LALLOC)
-          ENDIF
-        ENDIF
         DEALLOCATE( TEMP_ELT_I )
       END IF
       KEEP(49) = ARROW_ROOT

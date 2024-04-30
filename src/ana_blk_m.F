@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -18,12 +18,14 @@ C
       END TYPE COL_LMATRIX_T
       TYPE LMATRIX_T
        INTEGER    :: NBCOL
+       INTEGER    :: NBCOL_LOC, FIRST
        INTEGER(8) :: NZL
        TYPE(COL_LMATRIX_T), POINTER :: COL(:) => null()
       END TYPE LMATRIX_T
       TYPE COMPACT_GRAPH_T
        INTEGER(8) :: NZG, SIZEADJALLOCATED
        INTEGER    :: NG
+       INTEGER    :: FIRST, LAST
        INTEGER(8), POINTER :: IPE(:) => null()  
        INTEGER, POINTER :: ADJ(:) => null()  
       END TYPE COMPACT_GRAPH_T

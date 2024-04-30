@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -14,10 +14,26 @@ C
       MODULE MUMPS_LR_COMMON
       IMPLICIT NONE
       CONTAINS
-      SUBROUTINE COMPUTE_BLR_VCS(K472, IBCKSZ, MAXSIZE, NASS)
-        INTEGER, INTENT(IN) :: MAXSIZE, NASS, K472
+      SUBROUTINE COMPUTE_BLR_VCS(K472, IBCKSZ, MAXSIZE, NASS,
+     &           NFRONT, K35)
+        INTEGER, INTENT(IN) ::  MAXSIZE, NASS, K472
+        INTEGER, INTENT(IN) ::  NFRONT, K35
         INTEGER, INTENT(OUT) :: IBCKSZ
+        INTEGER k
+        INTEGER    :: LARGEST_IBCKSZ, ADJUSTED_LARGEST
+        INTEGER(4) :: I4
         IF (K472.EQ.1) THEN
+#if defined(__ve__)
+          IF (NASS.LE.1000) THEN
+            IBCKSZ = 256
+          ELSEIF (NASS.GT.1000.AND.NASS.LE.5000) THEN
+            IBCKSZ = 384
+          ELSEIF (NASS.GT.5000.AND.NASS.LE.10000) THEN
+            IBCKSZ = 512
+          ELSE
+            IBCKSZ = 512
+          ENDIF
+#else
           IF (NASS.LE.1000) THEN
             IBCKSZ = 128
           ELSEIF (NASS.GT.1000.AND.NASS.LE.5000) THEN
@@ -27,10 +43,21 @@ C
           ELSE
             IBCKSZ = 512
           ENDIF
+          IF (NFRONT.GT.20*NASS.AND.NFRONT.GT.100000) THEN
+            IBCKSZ = max(IBCKSZ,min(NASS,512))
+          ENDIF
+#endif
           IBCKSZ = min(IBCKSZ,MAXSIZE)
         ELSE
           IBCKSZ = MAXSIZE
         ENDIF
+        LARGEST_IBCKSZ  = int(dble(huge(I4)-10000000)/
+     &                    (dble(NFRONT)*dble(K35)))
+        k = 3
+        ADJUSTED_LARGEST = int((dble(LARGEST_IBCKSZ)*dble(k*7))/
+     &               dble(8*(k+1)))
+        IBCKSZ = min(IBCKSZ, ADJUSTED_LARGEST)
+      RETURN
       END SUBROUTINE COMPUTE_BLR_VCS
       SUBROUTINE MUMPS_UPD_TREE(NV, NSTEPS, N, FIRST, LPTR, RPTR, F,
      &     VLIST, FILS, FRERE_STEPS, STEP, DAD_STEPS, NE_STEPS, NA, LNA,

@@ -1,10 +1,10 @@
 /*
  *
- *  This file is part of MUMPS 5.4.0, released
- *  on Tue Apr 13 15:26:30 UTC 2021
+ *  This file is part of MUMPS 5.7.0, released
+ *  on Tue Apr 23 10:25:09 UTC 2024
  *
  *
- *  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+ *  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
  *  Mumps Technologies, University of Bordeaux.
  *
  *  This version of MUMPS is provided to you free of charge. It is
@@ -76,6 +76,26 @@ MUMPS_ASSIGN_SYM_PERM(MUMPS_INT * f77sym_perm);
     F_SYMBOL(nullify_c_sym_perm,NULLIFY_C_SYM_PERM)
 void MUMPS_CALL
 MUMPS_NULLIFY_C_SYM_PERM();
+MUMPS_INT*
+mumps_get_glob2loc_rhs();
+#define MUMPS_ASSIGN_GLOB2LOC_RHS \
+    F_SYMBOL(assign_glob2loc_rhs,ASSIGN_GLOB2LOC_RHS)
+void MUMPS_CALL
+MUMPS_ASSIGN_GLOB2LOC_RHS(MUMPS_INT * f77glob2loc_rhs);
+#define MUMPS_NULLIFY_C_GLOB2LOC_RHS \
+    F_SYMBOL(nullify_c_glob2loc_rhs,NULLIFY_C_GLOB2LOC_RHS)
+void MUMPS_CALL
+MUMPS_NULLIFY_C_GLOB2LOC_RHS();
+MUMPS_INT*
+mumps_get_glob2loc_sol();
+#define MUMPS_ASSIGN_GLOB2LOC_SOL \
+    F_SYMBOL(assign_glob2loc_sol,ASSIGN_GLOB2LOC_SOL)
+void MUMPS_CALL
+MUMPS_ASSIGN_GLOB2LOC_SOL(MUMPS_INT * f77glob2loc_sol);
+#define MUMPS_NULLIFY_C_GLOB2LOC_SOL \
+    F_SYMBOL(nullify_c_glob2loc_sol,NULLIFY_C_GLOB2LOC_SOL)
+void MUMPS_CALL
+MUMPS_NULLIFY_C_GLOB2LOC_SOL();
 #define MUMPS_ICOPY_32TO64_64C_IP_C \
     F_SYMBOL(icopy_32to64_64c_ip_c,ICOPY_32TO64_64C_IP_C)
 void MUMPS_CALL
@@ -84,4 +104,12 @@ MUMPS_ICOPY_32TO64_64C_IP_C(MUMPS_INT *inouttab, MUMPS_INT8 *sizetab);
     F_SYMBOL(icopy_64to32_64c_ip_c,ICOPY_64TO32_64C_IP_C)
 void MUMPS_CALL
 MUMPS_ICOPY_64to32_64C_IP_C(MUMPS_INT8 *inouttab, MUMPS_INT8 *sizetab);
+#define MUMPS_MALLOC_C \
+    F_SYMBOL(malloc_c,MALLOC_C)
+void MUMPS_CALL
+MUMPS_MALLOC_C(MUMPS_INT8 *address, MUMPS_INT8 *size);
+#define MUMPS_FREE_C \
+    F_SYMBOL(free_c,FREE_C)
+void MUMPS_CALL
+MUMPS_FREE_C(void *address);
 #endif /* MUMPS_COMMON_H */

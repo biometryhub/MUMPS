@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -16,11 +16,13 @@ C
       USE CMUMPS_LOAD
       USE CMUMPS_OOC
       USE CMUMPS_STRUC_DEF
+      USE CMUMPS_FACSOL_L0OMP_M, ONLY: CMUMPS_FREE_L0_OMP_FACTORS,
+     &  CMUMPS_INIT_L0_OMP_FACTORS
       USE CMUMPS_LR_STATS
       USE CMUMPS_LR_DATA_M, only: CMUMPS_BLR_INIT_MODULE, 
      &                            CMUMPS_BLR_END_MODULE
-     &                          , CMUMPS_BLR_STRUC_TO_MOD
      &                          , CMUMPS_BLR_MOD_TO_STRUC
+      USE MUMPS_PIVNUL_MOD, only: PIVNUL_LIST_STRUCT_T
       USE MUMPS_FRONT_DATA_MGT_M
 #if ! defined(NO_FDM_DESCBAND)
       USE MUMPS_FAC_DESCBAND_DATA_M
@@ -42,29 +44,13 @@ C  factorization.
 C
 C
       INTERFACE
-      SUBROUTINE CMUMPS_ANORMINF(id, ANORMINF, LSCAL)
+      SUBROUTINE CMUMPS_ANORMINF(id, ANORMINF, LSCAL, EFF_SIZE_SCHUR)
       USE CMUMPS_STRUC_DEF
       TYPE (CMUMPS_STRUC), TARGET :: id
       REAL, INTENT(OUT) :: ANORMINF
-      LOGICAL :: LSCAL
+      LOGICAL, INTENT(IN) :: LSCAL
+      INTEGER, INTENT(IN) :: EFF_SIZE_SCHUR
       END SUBROUTINE CMUMPS_ANORMINF
-      SUBROUTINE CMUMPS_FREE_ID_DATA_MODULES(id_FDM_F_ENCODING,
-     &  id_BLRARRAY_ENCODING, KEEP8)
-      USE MUMPS_FRONT_DATA_MGT_M, only : MUMPS_FDM_STRUC_TO_MOD,
-     &                                   MUMPS_FDM_END
-      USE CMUMPS_LR_DATA_M, only : CMUMPS_BLR_STRUC_TO_MOD,
-     &                             CMUMPS_BLR_END_MODULE
-#     if defined(MUMPS_F2003)
-      CHARACTER, DIMENSION(:), POINTER, intent(inout) ::
-     &                                            id_BLRARRAY_ENCODING
-      CHARACTER, DIMENSION(:), POINTER, intent(inout) ::
-     &                                            id_FDM_F_ENCODING
-#     else
-      CHARACTER, DIMENSION(:), POINTER :: id_BLRARRAY_ENCODING
-      CHARACTER, DIMENSION(:), POINTER :: id_FDM_F_ENCODING
-#     endif
-      INTEGER(8), intent(inout) :: KEEP8(150)
-      END SUBROUTINE CMUMPS_FREE_ID_DATA_MODULES
       END INTERFACE
 C
 C  Parameters
@@ -87,9 +73,11 @@ C
       INCLUDE 'mumps_headers.h'
       INTEGER(8) :: NSEND8, NSEND_TOT8
       INTEGER(8) :: NLOCAL8, NLOCAL_TOT8
+      INTEGER(4) :: I4
       INTEGER :: LDPTRAR, NELT_arg, NBRECORDS
-      INTEGER :: ITMP
+      INTEGER :: ITMP, JTMP
       INTEGER :: KEEP464COPY, KEEP465COPY
+      REAL    :: RATIOK465
       INTEGER(8) :: KEEP826_SAVE
       INTEGER(8) :: K67, K68, K70, K74, K75
       INTEGER(8) ITMP8
@@ -106,7 +94,7 @@ C     Size of send buffers (in bytes)
       INTEGER(8) :: CMUMPS_LBUF8 ! for intermediate computation
 C
       INTEGER PTRIST, PTRWB, MAXELT_SIZE,
-     &     ITLOC, IPOOL, K28, LPOOL
+     &     ITLOC, IPOOL, LPOOL
       INTEGER IRANK, ID_ROOT
       INTEGER KKKK
       INTEGER(8) :: NZ_locMAX8
@@ -114,15 +102,31 @@ C
       INTEGER(8) MAXS_BASE8, MAXS_BASE_RELAXED8
       REAL CNTL4, AVG_FLOPS
       INTEGER MIN_PERLU, MAXIS_ESTIM
+      INTEGER SUM_INFO22_THIS_NODE, MAX_SUM_INFO22_THIS_NODE
 C
       TYPE (S_IS_POINTERS_T) :: S_IS_POINTERS
       INTEGER   MAXIS
       INTEGER(8) :: MAXS
+      INTEGER(8) :: I8, TMPpeak 
+      INTEGER    :: ICNTL49_LOC, TMP_INFOG_4
+      LOGICAL    :: Compact_S_Authorized
 C     For S argument to arrowhead routines:
       INTEGER(8) :: MAXS_ARG
       COMPLEX, TARGET :: S_DUMMY_ARG(1)
       COMPLEX, POINTER, DIMENSION(:) :: S_PTR_ARG
-      INTEGER NPIV_CRITICAL_PATH
+      TYPE(PIVNUL_LIST_STRUCT_T)     :: PIVNUL_LIST_STRUCT
+C     Arrowheads
+      INTEGER, ALLOCATABLE, DIMENSION(:) :: INTARR
+      COMPLEX, POINTER, DIMENSION(:) :: DBLARR
+C     (pointer to point on used-data in some cases--elt-entry)
+      REAL TMPTIME
+      INTEGER  NOMP
+!$    INTEGER(8) :: CHUNK8
+      INTEGER NB_THREADS
+      DOUBLE PRECISION TIMEAVG, TIMEMAX,
+     &                 FLOPAVG, FLOPMAX
+      REAL TMPFLOP
+      INTEGER NPIV_CRITICAL_PATH, EFF_SIZE_SCHUR
       DOUBLE PRECISION TIME, TIMEET
       REAL ZERO, ONE, MONE
       PARAMETER( ZERO = 0.0E0, ONE = 1.0E0, MONE = -1.0E0)
@@ -131,13 +135,15 @@ C     For S argument to arrowhead routines:
       INTEGER PERLU, TOTAL_MBYTES, K231, K232, K233, BLR_STRAT
       INTEGER, PARAMETER :: IDUMMY = -9999
       LOGICAL, PARAMETER :: BDUMMY =.FALSE.
+      INTEGER, PARAMETER :: PANEL_TABSIZE = 20
       INTEGER COLOUR, COMM_FOR_SCALING ! For Simultaneous scaling
-      INTEGER LIWK, LWK_REAL
-      INTEGER(8) :: LWK
+      INTEGER(8) :: LIWK
+      INTEGER(8) :: LWK, LWK_REAL, LWRKR_TH, LWRKC_TH
+      INTEGER    :: NOMP_MAX
 C     I_AM_SLAVE: used to determine if proc has the role of a slave
 C     WK_USER_PROVIDED is set to true when WK_USER is provided by user
       LOGICAL I_AM_SLAVE, PERLU_ON, WK_USER_PROVIDED, EARLYT3ROOTINS
-      LOGICAL PRINT_MAXAVG
+      LOGICAL PRINT_MAXAVG, PRINT_NODEINFO
       REAL :: ANORMINF, SEUIL, SEUIL_LDLT_NIV2, Thresh_Seuil
       REAL :: CNTL1, CNTL3, CNTL5, CNTL6, EPS
       INTEGER N, LPN_LIST,POSBUF
@@ -149,6 +155,7 @@ C     WK_USER_PROVIDED is set to true when WK_USER is provided by user
 C temporary variables for collecting stats from all processors
       DOUBLE PRECISION :: TMP_MRY_LU_FR
       DOUBLE PRECISION :: TMP_MRY_LU_LRGAIN
+      INTEGER :: KEEP399_SAVE
       DOUBLE PRECISION :: TMP_MRY_CB_FR
       DOUBLE PRECISION :: TMP_MRY_CB_LRGAIN
       DOUBLE PRECISION :: TMP_FLOP_LRGAIN
@@ -168,8 +175,6 @@ C temporary variables for collecting stats from all processors
       DOUBLE PRECISION :: TMP_FLOP_CB_COMPRESS
       DOUBLE PRECISION :: TMP_FLOP_CB_DECOMPRESS
       DOUBLE PRECISION :: TMP_FLOP_FACTO_FR
-      DOUBLE PRECISION :: TMP_FLOP_SOLFWD_FR
-      DOUBLE PRECISION :: TMP_FLOP_SOLFWD_LR
       INTEGER :: TMP_CNT_NODES
       DOUBLE PRECISION :: TMP_TIME_UPDATE
       DOUBLE PRECISION :: TMP_TIME_UPDATE_LRLR1
@@ -192,59 +197,69 @@ C temporary variables for collecting stats from all processors
       DOUBLE PRECISION :: TMP_TIME_DIAGCOPY
       DOUBLE PRECISION :: TMP_TIME_DECOMP
       DOUBLE PRECISION :: TMP_TIME_DECOMP_UCFS
-      DOUBLE PRECISION :: TMP_TIME_DECOMP_ASM1
-      DOUBLE PRECISION :: TMP_TIME_DECOMP_LOCASM2
-      DOUBLE PRECISION :: TMP_TIME_DECOMP_MAPLIG1
-      DOUBLE PRECISION :: TMP_TIME_DECOMP_ASMS2S
-      DOUBLE PRECISION :: TMP_TIME_DECOMP_ASMS2M
+      DOUBLE PRECISION :: TMP_TIME_LRASM_NIV1
+      DOUBLE PRECISION :: TMP_TIME_LRASM_LOCASM2
+      DOUBLE PRECISION :: TMP_TIME_LRASM_MAPLIG1
+      DOUBLE PRECISION :: TMP_TIME_LRASM_CONTRIB2
+      DOUBLE PRECISION :: TMP_TIME_FRASM_LOCASM2
+      DOUBLE PRECISION :: TMP_TIME_FRASM_MAPLIG1
+      DOUBLE PRECISION :: TMP_TIME_FRASM_CONTRIB2
 C
-C  Workspace.
+C  Workspace
 C
       INTEGER, DIMENSION(:), ALLOCATABLE :: IWK
       COMPLEX, DIMENSION(:), ALLOCATABLE :: WK
-      REAL, DIMENSION(:), ALLOCATABLE :: WK_REAL
+      REAL, DIMENSION(:), ALLOCATABLE    :: WK_REAL
+      REAL, DIMENSION(:,:), ALLOCATABLE:: WRKR_TH, 
+     &                                    WRKC_TH
       INTEGER(8), DIMENSION(:), ALLOCATABLE :: IWK8
       INTEGER, DIMENSION(:), ALLOCATABLE :: BURP
       INTEGER, DIMENSION(:), ALLOCATABLE :: BUCP
       INTEGER, DIMENSION(:), ALLOCATABLE :: BURS
       INTEGER, DIMENSION(:), ALLOCATABLE :: BUCS
-      INTEGER BUREGISTRE(12)
-      INTEGER BUINTSZ, BURESZ, BUJOB
+      INTEGER(8) :: BUREGISTRE(12)
+      INTEGER(8) :: BUINTSZ, BURESZ, NZ_loc8
+      INTEGER    :: BUJOB
       INTEGER BUMAXMN, M, SCMYID, SCNPROCS
       REAL    SCONEERR, SCINFERR
 C
 C  Parameters arising from the structure
 C  =====================================
 C
-      INTEGER, POINTER ::  JOB
 *     Control parameters: see description in CMUMPSID
       REAL,DIMENSION(:),POINTER::RINFO, RINFOG
       REAL,DIMENSION(:),POINTER::    CNTL
-      INTEGER,DIMENSION(:),POINTER:: INFOG, KEEP
-      INTEGER, DIMENSION(:), POINTER :: MYIRN_loc, MYJCN_loc
-      COMPLEX, DIMENSION(:), POINTER :: MYA_loc
+      INTEGER,DIMENSION(:),POINTER   :: INFOG, KEEP
+      INTEGER, DIMENSION(:), POINTER :: IRN_loc_PTR, JCN_loc_PTR
+      REAL, DIMENSION(:), POINTER   :: COLSCA_PTR, 
+     &                                 ROWSCA_PTR
+      COMPLEX, DIMENSION(:), POINTER:: A_loc_PTR
       INTEGER, TARGET :: DUMMYIRN_loc(1), DUMMYJCN_loc(1)
+      REAL, TARGET    :: DUMMYSCA(1)
       COMPLEX, TARGET :: DUMMYA_loc(1)
       INTEGER,DIMENSION(:),POINTER::ICNTL
       EXTERNAL MUMPS_GET_POOL_LENGTH
-      INTEGER MUMPS_GET_POOL_LENGTH
+      INTEGER MUMPS_GET_POOL_LENGTH, SIZESCAL
       INTEGER(8) :: TOTAL_BYTES
       INTEGER(8) :: I8TMP, LWK_USER_SUM8
 C
 C  External references
 C  ===================
-      INTEGER numroc
-      EXTERNAL numroc
+      INTEGER, EXTERNAL :: MUMPS_NUMROC
       INTEGER:: NWORKING
       LOGICAL:: MEM_EFF_ALLOCATED
+      INTEGER   :: TOTAL_MBYTES_UNDER_L0
+      INTEGER(8):: TOTAL_BYTES_UNDER_L0
 C  Fwd in facto:
       COMPLEX, DIMENSION(:), POINTER :: RHS_MUMPS
       LOGICAL :: RHS_MUMPS_ALLOCATED
       INTEGER :: NB_ACTIVE_FRONTS_ESTIM
       INTEGER :: NB_FRONTS_F_ESTIM
+      INTEGER :: KEEP_486_FOR_PRINT
 C
-C 
-      JOB=>id%JOB
+C     --------------------------
+C     Pointers used as shortcuts
+C     --------------------------
       RINFO=>id%RINFO
       RINFOG=>id%RINFOG
       CNTL=>id%CNTL
@@ -252,22 +267,26 @@ C
       KEEP=>id%KEEP
       ICNTL=>id%ICNTL
       IF (id%KEEP8(29) .NE. 0) THEN
-        MYIRN_loc=>id%IRN_loc
-        MYJCN_loc=>id%JCN_loc
-        MYA_loc=>id%A_loc
+        IRN_loc_PTR=>id%IRN_loc
+        JCN_loc_PTR=>id%JCN_loc
+        A_loc_PTR=>id%A_loc
       ELSE
-        MYIRN_loc=>DUMMYIRN_loc
-        MYJCN_loc=>DUMMYJCN_loc
-        MYA_loc=>DUMMYA_loc
+        IRN_loc_PTR=>DUMMYIRN_loc
+        JCN_loc_PTR=>DUMMYJCN_loc
+        A_loc_PTR=>DUMMYA_loc
       ENDIF
+      NOMP = 1 
       N = id%N
       EPS = epsilon ( ZERO )
 C     TIMINGS: reset to 0
       id%DKEEP(92)=0.0E0
       id%DKEEP(93)=0.0E0
       id%DKEEP(94)=0.0E0
+      id%DKEEP(95)=0.0E0
+      id%DKEEP(96)=0.0E0
       id%DKEEP(97)=0.0E0
       id%DKEEP(98)=0.0E0
+      id%DKEEP(99)=0.0E0
       id%DKEEP(56)=0.0E0
 C     Count of MPI messages: reset to 0
       id%KEEP(266)=0
@@ -276,66 +295,21 @@ C     MIN/MAX pivots reset to 0
       id%DKEEP(19)=huge(0.0E0)
       id%DKEEP(20)=huge(0.0E0)
       id%DKEEP(21)=0.0E0
+C     RR related
+      id%KEEP(17)  = 0
+      id%INFOG(28) = 0
 C     Number of symmetric swaps
       id%KEEP8(80)=0_8
 C     Largest increase of internal panel size
       id%KEEP(425) =0
-C
       PRINT_MAXAVG = .NOT.(id%NSLAVES.EQ.1 .AND. KEEP(46).EQ.1)
-C
-C     BEGIN CASE OF ALLOCATED DATA FROM PREVIOUS CALLS
-C     Data from factorization is now freed asap
-C     id%S, id%IS
-      IF (id%KEEP8(24).EQ.0_8) THEN
-C       -- deallocate only when not provided/allocated by the user
-         IF (associated(id%S)) THEN
-            DEALLOCATE(id%S)
-            id%KEEP8(23)=0_8
-            NULLIFY(id%S)
-         ENDIF
-      ENDIF
-      IF (associated(id%IS)) THEN
-        DEALLOCATE(id%IS)
-        NULLIFY(id%IS)
-      ENDIF
-C     Free BLR factors, if any
-      CALL CMUMPS_FREE_ID_DATA_MODULES(id%FDM_F_ENCODING,
-     &            id%BLRARRAY_ENCODING, id%KEEP8(1))
-      IF (associated(id%root%RG2L_ROW))THEN
-        DEALLOCATE(id%root%RG2L_ROW)
-        NULLIFY(id%root%RG2L_ROW)
-      ENDIF
-      IF (associated(id%root%RG2L_COL))THEN
-        DEALLOCATE(id%root%RG2L_COL)
-        NULLIFY(id%root%RG2L_COL)
-      ENDIF
-      IF (associated( id%PTLUST_S )) THEN
-        DEALLOCATE(id%PTLUST_S)
-        NULLIFY(id%PTLUST_S)
-      ENDIF
-      IF (associated(id%PTRFAC)) THEN
-        DEALLOCATE(id%PTRFAC)
-        NULLIFY(id%PTRFAC)
-      END IF
-      IF (associated(id%RHSCOMP)) THEN
-        DEALLOCATE(id%RHSCOMP)
-        NULLIFY(id%RHSCOMP)
-        id%KEEP8(25)=0_8
-      ENDIF
-      IF (associated(id%POSINRHSCOMP_ROW)) THEN
-        DEALLOCATE(id%POSINRHSCOMP_ROW)
-        NULLIFY(id%POSINRHSCOMP_ROW)
-      ENDIF
-      IF (id%POSINRHSCOMP_COL_ALLOC) THEN
-        DEALLOCATE(id%POSINRHSCOMP_COL)
-        NULLIFY(id%POSINRHSCOMP_COL)
-        id%POSINRHSCOMP_COL_ALLOC = .FALSE.
-      ENDIF
-C
-C     END CASE OF ALLOCATED DATA FROM PREVIOUS CALLS
+C     Print per node informtation only in case ther are several
+C     compute nodes (id%KEEP(412): #MPI procs on comupte node)
+      PRINT_NODEINFO = PRINT_MAXAVG .AND. id%NPROCS .NE. id%KEEP(412)
 C
 C     Related to forward in facto functionality (referred to as "Fwd in facto")
       NULLIFY(RHS_MUMPS)
+      NULLIFY(DBLARR)
       RHS_MUMPS_ALLOCATED = .FALSE.
 C     -----------------------------------------------------------------------
 C     Set WK_USER_PROVIDED to true when workspace WK_USER is provided by user
@@ -421,15 +395,23 @@ C       -- ICNTL(22) must be set before facto phase
 C          (=1 OOC on; =0 OOC off)
 C          and cannot be changed for subsequent solve phases.
         KEEP(201)=id%ICNTL(22)
-        IF (KEEP(201) .NE. 0) THEN
+        IF (KEEP(201) .EQ. 1) THEN
 #         if defined(OLD_OOC_NOPANEL)
             KEEP(201)=2
 #         else
             KEEP(201)=1
 #         endif
+        ELSE
+          id%KEEP(201)=0
         ENDIF
       ENDIF
 C     ----------------------
+C     Broadcast ICNTL(49)
+      IF (id%MYID.EQ.MASTER) ICNTL49_LOC=id%ICNTL(49)
+      CALL MPI_BCAST( ICNTL49_LOC, 1, MPI_INTEGER,
+     &                MASTER, id%COMM, IERR )
+C     ----------------------
+C
 C     Broadcast KEEP options
 C     defined for facto:
 C     ----------------------
@@ -441,6 +423,17 @@ C     ----------------------
      &                MASTER, id%COMM, IERR )
       CALL MPI_BCAST( KEEP(201), 1, MPI_INTEGER,
      &                MASTER, id%COMM, IERR )
+      CALL MPI_BCAST( KEEP(459), 1, MPI_INTEGER,
+     &                MASTER, id%COMM, IERR )
+      CALL MPI_BCAST( KEEP(460), 1, MPI_INTEGER,
+     &                MASTER, id%COMM, IERR )
+      IF ( KEEP(459) .GE. PANEL_TABSIZE ) THEN
+        IF ( LPOK ) THEN
+        WRITE(LP,'(A,I4,A,I3)') " ** WARNING ** KEEP(459)=",KEEP(459),
+     &  " too large, resetting to",PANEL_TABSIZE-1
+        ENDIF
+        KEEP(459) = PANEL_TABSIZE - 1
+      ENDIF
       PERLU = KEEP(12)
       IF (id%MYID.EQ.MASTER) THEN
 C       KEEP(50)  case
@@ -458,15 +451,19 @@ C       For symmetric (non general) matrices
 C       set (directly) CNTL1 = 0.0
 C       ---------------------------------------
         KEEP(17)=0
-        IF ( KEEP(50) .eq. 1 ) THEN
-          IF (CNTL1 .ne. ZERO ) THEN
-            IF ( PROKG ) THEN
-              WRITE(MPG,'(A)')
-     & '** Warning : SPD solver called, resetting CNTL(1) to 0.0E0'
-            END IF
-          END IF
-          CNTL1 = ZERO
-        END IF
+C       Automatic choice if CNTL(1)<0
+C       For rank-revealing (KEEP(19).GT.0) then
+C       set CNTL1=0.1 even if SYM=1 
+        IF (CNTL1.LT.ZERO) THEN
+C        automatic choice
+         IF (KEEP(19).GT.0) THEN
+          CNTL1=0.1E0
+         ELSE IF (KEEP(50).EQ.1) THEN
+          CNTL1=ZERO
+         ELSE
+          CNTL1=0.01E0
+         ENDIF
+        ENDIF
 C       CNTL1 threshold value must be between 
 C       0.0 and 1.0 (for SYM=0) and 0.5 (for SYM=1,2)
         IF (CNTL1.GT.ONE)   CNTL1=ONE
@@ -477,6 +474,9 @@ C       0.0 and 1.0 (for SYM=0) and 0.5 (for SYM=1,2)
         PARPIV_T1 = id%KEEP(268)
         IF (PARPIV_T1.EQ.77) THEN
          PARPIV_T1 = 0 
+#if defined(__ve__)
+         PARPIV_T1 = -2
+#endif
         ENDIF
         IF (PARPIV_T1.EQ.-3) THEN
           PARPIV_T1 = 0
@@ -486,7 +486,7 @@ C        out of range values
          PARPIV_T1 =0
         ENDIF
 C       note that KEEP(50).EQ.1 => CNTL1=0.0
-        IF (CNTL1.EQ.0.0.OR.(KEEP(50).eq.1)) PARPIV_T1 = 0 
+        IF (CNTL1.EQ.0.0E0.OR.(KEEP(50).eq.1)) PARPIV_T1 = 0 
 C
         IF (PARPIV_T1.EQ.-2) THEN
          IF (KEEP(19).NE.0) THEN
@@ -502,6 +502,22 @@ C         but do NOT switch off PARPIV_1 with null pivot detection
         CALL MPI_BCAST( KEEP(269), 1, MPI_INTEGER,
      &                  MASTER, id%COMM, IERR )
         IF (id%MYID.EQ.MASTER) THEN
+C{
+C         OMP parallelization of arrowheads
+C         out of range are treated as zero
+          IF (KEEP(399).LT.-1) KEEP(399)=-1
+          KEEP399_SAVE = KEEP(399)
+          IF (KEEP(399).EQ.-1) THEN
+            IF ((KEEP(54).EQ.0).AND.(id%NPROCS.GT.1)) THEN
+              KEEP(399) = 1
+            ELSE
+              KEEP(399) = 3
+            ENDIF
+          ENDIF
+#if defined(PCPRET)
+C         new multithreaded >=2 algo does not compile on PCPRET
+          KEEP(399) = 1
+#endif
 C         -----------------------------------------------------
 C         Decoding of ICNTL(35) for factorization: same as
 C         at analysis except that we store a copy of ICNTL(35)
@@ -533,19 +549,32 @@ C           ICNTL(35) must have been set at analysis.
             id%INFO(2)=0
             GOTO 105
           ENDIF
+C         Save value of KEEP(486) before possibly
+C         forcing it to 3 in case of discard factors
+          KEEP_486_FOR_PRINT=KEEP(486)
+          IF (KEEP(201) .EQ. -1 .AND. KEEP(486) .NE.0) THEN
+            KEEP(486) = 3
+          ENDIF
           KEEP464COPY  = id%ICNTL(38)
           IF (KEEP464COPY.LT.0.OR.KEEP464COPY.GT.1000) THEN
-C          Out of range values treated as 0
-           KEEP464COPY = 0
+C          Out of range values treated as 1000
+           KEEP464COPY = 1000
           ENDIF
           IF (id%KEEP(461).LT.1) THEN
             id%KEEP(461) = 10
           ENDIF
-          KEEP465COPY=0
+          IF (id%KEEP(462).LT.1) THEN
+            id%KEEP(462) = 10
+          ENDIF
+          KEEP465COPY = id%ICNTL(39)
+          IF (KEEP465COPY.LT.0.OR.(KEEP465COPY.GT.1000)) THEN
+C          Out of range values treated as 1000
+           KEEP465COPY = 1000
+          ENDIF
           IF (id%ICNTL(36).EQ.1.OR.id%ICNTL(36).EQ.3) THEN
             IF (CNTL1.EQ.ZERO .OR. KEEP(468).LE.1) THEN
               KEEP(475) = 3
-            ELSE IF (KEEP(269).GT.0) THEN
+            ELSE IF ( (KEEP(269).GT.0).OR. (KEEP(269).EQ.-2)) THEN
               KEEP(475) = 2
             ELSE IF (KEEP(468).EQ.2) THEN
               KEEP(475) = 2
@@ -571,7 +600,6 @@ C           Other values treated as zero
 C          CompressCB incompatible with type4,5,6 nodes
            KEEP(489)=0
           ENDIF
-            KEEP(489)=0
 C         id%KEEP(476) \in [1,100] 
           IF ((id%KEEP(476).GT.100).OR.(id%KEEP(476).LT.1)) THEN
               id%KEEP(476)=  50
@@ -582,7 +610,7 @@ C         id%KEEP(477) \in [1,100]
           ENDIF
 C         id%KEEP(483) \in [1,100] 
           IF ((id%KEEP(483).GT.100).OR.(id%KEEP(483).LT.1)) THEN
-              id%KEEP(483)=  50
+              id%KEEP(483)= 50
           ENDIF
 C         id%KEEP(484) \in [1,100] 
           IF ((id%KEEP(484).GT.100).OR.(id%KEEP(484).LT.1)) THEN
@@ -620,11 +648,16 @@ C             Reset to 3 if 5 or to 4 if 6
             ENDIF
           ENDIF
  105    CONTINUE
+C}
         ENDIF  ! id%MYID .EQ. MASTER
         CALL MUMPS_PROPINFO( id%ICNTL(1), id%INFO(1),
      &                        id%COMM, id%MYID )
 C
         IF (id%INFO(1).LT.0) GOTO 530
+        CALL MPI_BCAST( KEEP(281), 1, MPI_INTEGER,
+     &                  MASTER, id%COMM, IERR )
+        CALL MPI_BCAST( KEEP(399), 1, MPI_INTEGER,
+     &                  MASTER, id%COMM, IERR )
         CALL MPI_BCAST( KEEP(473), 14, MPI_INTEGER,
      &                  MASTER, id%COMM, IERR )
         IF (KEEP(486).NE.0) THEN
@@ -660,6 +693,8 @@ C         -- Low Level I/O strategy
           CALL MPI_BCAST( KEEP(205), 1, MPI_INTEGER,
      &                  MASTER, id%COMM, IERR )
           CALL MPI_BCAST( KEEP(211), 1, MPI_INTEGER,
+     &                  MASTER, id%COMM, IERR )
+          CALL MPI_BCAST( KEEP(255), 1, MPI_INTEGER,
      &                  MASTER, id%COMM, IERR )
         ENDIF
 C     Fwd in facto: explicitly forbid
@@ -698,23 +733,45 @@ C     The memory allowed is given by ICNTL(23) in Mbytes
 C     0 means that nothing is provided.
 C     Save memory available, ICNTL(23) in KEEP8(4)
 C
+      IF ( ICNTL(23) .GT. 0 ) THEN
+        ITMP = 1
+      ELSE
+        ITMP = 0
+      ENDIF
+      CALL MPI_ALLREDUCE( ITMP, JTMP, 1, MPI_INTEGER,
+     &                 MPI_SUM, id%COMM, IERR)
       IF ( id%MYID.EQ.MASTER ) THEN
-        ITMP = ICNTL(23)
+C       Negative values considered 0
+        ITMP = max(ICNTL(23),0)
       END IF
       CALL MPI_BCAST( ITMP, 1, MPI_INTEGER,
      &                MASTER, id%COMM, IERR )
-C    
-C     Ignore ICNTL(23) when WK_USER is provided
-c     by resetting ITMP to zero on each proc where WK_USER is provided
-      IF (WK_USER_PROVIDED) ITMP = 0
+C     JTMP: nb of procs with nonzero ICNTL(23)
+C     ITMP: value of ICNTL(23) on master
+      IF ( ITMP .GT. 0 .AND. JTMP .EQ. 1 ) THEN
+C       ICNTL(23)>0 only on master
+      ELSE
+C       Local values of ICNTL(23) are used, note that
+C       they could all be zeros
+        ITMP = ICNTL(23)
+      ENDIF
+C 
       ITMP8 = int(ITMP, 8)
       id%KEEP8(4) = ITMP8 * 1000000_8   ! convert to nb of bytes
+C     Compute \sum of memories allowed
+      CALL MPI_REDUCE( id%KEEP8(4), ITMP8, 1, MPI_INTEGER8,
+     &                  MPI_SUM, MASTER, id%COMM, IERR )
+      ITMP8 = ITMP8 / 1000000_8 ! Use to print \sum_{ICNTL(23)}
       IF ( PROKG ) THEN
           NWORKING = id%NSLAVES
-          WRITE( MPG, 172 ) NWORKING, id%ICNTL(22), KEEP(486),
+          CALL MUMPS_SETI8TOI4( id%KEEP8(129), TMP_INFOG_4)
+          WRITE( MPG, 172 ) 
+     &    NWORKING, id%ICNTL(22), KEEP_486_FOR_PRINT,
+     &    KEEP(489),
+     &    id%ICNTL(49),
      &    KEEP(12), 
-     &    id%KEEP8(111), KEEP(126), KEEP(127), KEEP(28),
-     &    id%KEEP8(4)/1000000_8, LWK_USER_SUM8, CNTL1
+     &    id%KEEP8(111), TMP_INFOG_4, KEEP(127), KEEP(28),
+     &    id%KEEP8(4)/1000000_8, ITMP8, LWK_USER_SUM8, CNTL1
           IF (KEEP(252).GT.0) 
      &    WRITE(MPG,173) KEEP(253)
           IF (KEEP(269).NE.0) 
@@ -757,6 +814,11 @@ C
 *     computation of the determinant
 *     ********************************
 C
+         CALL MUMPS_STOP_ON_USER_REQUEST(id%KEEP,id%KEEP8, id%ICNTL,
+     &   id%INFO, id%MYID)
+         CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &        id%COMM, id%MYID )
+         IF ( id%INFO(1) .LT. 0) GOTO 530
 *     **********************
 *     Begin of Scaling phase
 *     **********************
@@ -798,7 +860,7 @@ C       -- More expensive setting of SIMSCALING (it was the default in 4.8.1,2,3
 C
         IF ( ((KEEP(52).EQ.7).OR.(KEEP(52).EQ.8)) .AND. 
      &       KEEP(54).NE.0 ) THEN
-C         ------------------------------
+C{        ------------------------------
 C         Scaling for distributed matrix
 C         We need to allocate scaling
 C         arrays on all processors, not
@@ -823,13 +885,14 @@ C         ------------------------------
          M = N
          BUMAXMN=M
          IF(N > BUMAXMN) BUMAXMN = N
-         LIWK = 4*BUMAXMN
-         ALLOCATE (IWK(LIWK),BURP(M),BUCP(N),
-     &            BURS(2* (id%NPROCS)),BUCS(2* (id%NPROCS)),
+         LIWK = 4_8*int(BUMAXMN,8)
+         ALLOCATE (IWK(LIWK), BURP(M), BUCP(N),
+     &            BURS(2* id%NPROCS), BUCS(2* id%NPROCS),
      &            stat=allocok)
          IF (allocok > 0) THEN
             id%INFO(1)=-13
-            id%INFO(2)=LIWK+M+N+4* (id%NPROCS)
+            CALL MUMPS_SET_IERROR(LIWK+int(M,8)+int(N,8)+
+     &      4_8*int(id%NPROCS,8) , id%INFO(2))
          ENDIF
 C        --- Propagate enventual error
          CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
@@ -838,27 +901,38 @@ C        --- Propagate enventual error
 C        -- estimation of memory and construction of partvecs
          BUJOB = 1
 C        -- LWK not used
-         LWK_REAL   = 1
+         LWK_REAL = 1_8
+         LWRKR_TH = 1_8
+         LWRKC_TH = 1_8
+         NOMP_MAX   = 1
          ALLOCATE(WK_REAL(LWK_REAL),
+     &            WRKR_TH(LWRKR_TH,NOMP_MAX),
+     &            WRKC_TH(LWRKC_TH,NOMP_MAX),
      &            stat=allocok)
          IF (allocok > 0) THEN
             id%INFO(1)=-13
-            id%INFO(2)=LWK_REAL
+            CALL MUMPS_SET_IERROR(
+     &             LWK_REAL+ 
+     &             LWRKR_TH*int(NOMP_MAX,8)+
+     &             LWRKC_TH*int(NOMP_MAX,8),
+     &             id%INFO(2))
          ENDIF
 C        --- Propagate enventual error
          CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &        id%COMM, id%MYID )
          IF (id%INFO(1).LT.0) GOTO 517
          CALL CMUMPS_SIMSCALEABS(
-     &        MYIRN_loc(1), MYJCN_loc(1), MYA_loc(1),
+     &        IRN_loc_PTR(1), JCN_loc_PTR(1), A_loc_PTR(1),
      &        id%KEEP8(29),
      &        M, N,  id%NPROCS, id%MYID, id%COMM,
      &        BURP, BUCP,
      &        BURS, BUCS, BUREGISTRE,
      &        IWK, LIWK,
      &        BUINTSZ, BURESZ, BUJOB,
-     &        id%ROWSCA(1), id%COLSCA(1), WK_REAL, LWK_REAL,
-     &        id%KEEP(50),
+     &        id%ROWSCA(1), id%COLSCA(1), WK_REAL, LWK_REAL, 
+     &        WRKR_TH, LWRKR_TH, 
+     &        WRKC_TH, LWRKC_TH,
+     &        NOMP_MAX, id%KEEP(50),
      &        K231, K232, K233, 
      &        id%DKEEP(3),
      &        SCONEERR, SCINFERR)
@@ -868,15 +942,40 @@ C        --- Propagate enventual error
             ALLOCATE(IWK(LIWK), stat=allocok)
             IF (allocok > 0) THEN
                id%INFO(1)=-13
-               id%INFO(2)=LIWK
+               CALL MUMPS_SET_IERROR(LIWK,id%INFO(2))
             ENDIF
          ENDIF
-         LWK_REAL = BURESZ
-         DEALLOCATE(WK_REAL)
-         ALLOCATE (WK_REAL(LWK_REAL), stat=allocok)
+         DEALLOCATE(WK_REAL, WRKR_TH, WRKC_TH)
+         LWK_REAL     = BURESZ
+C
+C        -- Set NOMP_MAX from KEEP(281)
+         CALL CMUMPS_SET_NOMP_MAX(id%KEEP(281), id%KEEP(361), 
+     &                            N, NOMP_MAX)
+C
+         IF (NOMP_MAX.LE.1) THEN
+C          temp array per thread not used
+           LWRKR_TH = 1
+           LWRKC_TH = 1
+         ELSE
+           LWRKR_TH = N
+           IF (id%KEEP(50).NE.0) THEN
+C            WRKC_TH not used on symmetric matrices
+             LWRKC_TH = 1
+           ELSE
+             LWRKC_TH = N
+           ENDIF
+         ENDIF
+         ALLOCATE(WK_REAL(LWK_REAL),
+     &            WRKR_TH(LWRKR_TH,max(NOMP_MAX,1)),
+     &            WRKC_TH(LWRKC_TH,max(NOMP_MAX,1)),
+     &            stat=allocok)
          IF (allocok > 0) THEN
             id%INFO(1)=-13
-            id%INFO(2)=LWK_REAL
+            CALL MUMPS_SET_IERROR(
+     &             LWK_REAL+ 
+     &             LWRKR_TH*int(max(NOMP_MAX,1),8)+
+     &             LWRKC_TH*int(max(NOMP_MAX,1),8),
+     &             id%INFO(2))
          ENDIF
 C        --- Propagate enventual error
          CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
@@ -885,7 +984,7 @@ C        --- Propagate enventual error
 C        -- estimation of memory and construction of partvecs
          BUJOB = 2
          CALL CMUMPS_SIMSCALEABS(
-     &        MYIRN_loc(1), MYJCN_loc(1), MYA_loc(1),
+     &        IRN_loc_PTR(1), JCN_loc_PTR(1), A_loc_PTR(1),
      &        id%KEEP8(29),
      &        M, N,  id%NPROCS, id%MYID, id%COMM,
      &        BURP, BUCP,
@@ -893,16 +992,20 @@ C        -- estimation of memory and construction of partvecs
      &        IWK, LIWK,
      &        BUINTSZ, BURESZ, BUJOB,
      &        id%ROWSCA(1), id%COLSCA(1), WK_REAL, LWK_REAL,
-     &        id%KEEP(50),
+     &        WRKR_TH, LWRKR_TH, 
+     &        WRKC_TH, LWRKC_TH,
+     &        NOMP_MAX, id%KEEP(50),
      &        K231, K232, K233, 
      &        id%DKEEP(3),
      &        SCONEERR, SCINFERR)
          id%DKEEP(4) = SCONEERR
          id%DKEEP(5) = SCINFERR
 CXXXX 
-         DEALLOCATE(IWK, WK_REAL,BURP,BUCP,BURS, BUCS)
+         DEALLOCATE(IWK, BURP,BUCP,BURS, BUCS)
+         DEALLOCATE(WK_REAL, WRKR_TH, WRKC_TH)
+C}
         ELSE IF ( KEEP(54) .EQ. 0 ) THEN
-C         ------------------
+C{        ------------------
 C         Centralized matrix
 C         ------------------
           IF ((KEEP(52).EQ.7).OR.(KEEP(52).EQ.8))  THEN
@@ -919,23 +1022,47 @@ C             -------------------------------
               IF (id%MYID.EQ.MASTER) THEN
                  M = N
                  BUMAXMN=N
-CXXXX 
                  IF(N > BUMAXMN) BUMAXMN = N
-                 LIWK = 1
-                 ALLOCATE (IWK(LIWK),BURP(1),BUCP(1),
-     &                BURS(1),BUCS(1),
+                 LIWK = 1_8
+                 ALLOCATE(IWK(LIWK), BURP(1), BUCP(1),
+     &                BURS(1), BUCS(1),
      &                stat=allocok)
                  IF (allocok > 0) THEN
                     id%INFO(1)=-13
-                    id%INFO(2)=LIWK+1+1+1+1
+                    CALL MUMPS_SET_IERROR( LIWK+4_8, id%INFO(2) )
+                    GOTO 400
                  ENDIF
-                 LWK_REAL = M + N  
-                 ALLOCATE (WK_REAL(LWK_REAL), stat=allocok)
+                 LWK_REAL = int(M,8) + int(N,8)  
+C
+C                -- Set NOMP_MAX from KEEP(281)
+                 CALL CMUMPS_SET_NOMP_MAX(id%KEEP(281), id%KEEP(361), 
+     &                                    N, NOMP_MAX)
+C
+                 IF (NOMP_MAX.LE.1) THEN
+C                  temp array per thread not used
+                   LWRKR_TH = 1
+                   LWRKC_TH = 1
+                 ELSE
+                   LWRKR_TH = N
+                   IF (id%KEEP(50).NE.0) THEN
+C                    WRKC_TH not used on symmetric matrices
+                     LWRKC_TH = 1
+                   ELSE
+                     LWRKC_TH = N
+                   ENDIF
+                 ENDIF
+                 ALLOCATE(WK_REAL(LWK_REAL),
+     &                    WRKR_TH(LWRKR_TH,max(NOMP_MAX,1)),
+     &                    WRKC_TH(LWRKC_TH,max(NOMP_MAX,1)),
+     &                    stat=allocok)
                  IF (allocok > 0) THEN
                     id%INFO(1)=-13
-                    id%INFO(2)=1
+                    CALL MUMPS_SET_IERROR(
+     &                     LWK_REAL+ 
+     &                     LWRKR_TH*int(max(NOMP_MAX,1),8)+
+     &                     LWRKC_TH*int(max(NOMP_MAX,1),8),
+     &                     id%INFO(2))
                  ENDIF
-                 IF (id%INFO(1) .LT. 0) GOTO 400
                  CALL MPI_COMM_RANK(COMM_FOR_SCALING, SCMYID, IERR)
                  CALL MPI_COMM_SIZE(COMM_FOR_SCALING, SCNPROCS, IERR)
                  BUJOB = 1
@@ -948,12 +1075,13 @@ CXXXX
      &                IWK, LIWK,
      &                BUINTSZ, BURESZ, BUJOB,
      &                id%ROWSCA(1), id%COLSCA(1), WK_REAL, LWK_REAL,
-     &                id%KEEP(50),
+     &                WRKR_TH, LWRKR_TH, 
+     &                WRKC_TH, LWRKC_TH,
+     &                NOMP_MAX, id%KEEP(50),
      &                K231, K232, K233, 
      &                id%DKEEP(3),
      &                SCONEERR, SCINFERR)
                  IF(LWK_REAL < BURESZ) THEN
-                    ! internal error since LWK_REAL=BURESZ=M+N
                     id%INFO(1) = -136
                     GOTO 400
                  ENDIF
@@ -967,21 +1095,27 @@ CXXXX
      &                IWK, LIWK,
      &                BUINTSZ, BURESZ, BUJOB,
      &                id%ROWSCA(1), id%COLSCA(1), WK_REAL, LWK_REAL,
-     &                id%KEEP(50),
+     &                WRKR_TH, LWRKR_TH, 
+     &                WRKC_TH, LWRKC_TH,
+     &                NOMP_MAX, id%KEEP(50),
      &                K231, K232, K233, 
      &                id%DKEEP(3),
      &                SCONEERR, SCINFERR)
                  id%DKEEP(4) = SCONEERR
                  id%DKEEP(5) = SCINFERR
-CXXXX 
-                 DEALLOCATE(WK_REAL)                 
-                 DEALLOCATE (IWK,BURP,BUCP,
-     &                BURS,BUCS)
+ 400             CONTINUE
+                 IF (allocated(WK_REAL)) DEALLOCATE(WK_REAL)
+                 IF (allocated(WRKR_TH)) DEALLOCATE(WRKR_TH)
+                 IF (allocated(WRKC_TH)) DEALLOCATE(WRKC_TH)
+                 IF (allocated(IWK))     DEALLOCATE(IWK)
+                 IF (allocated(BURP))    DEALLOCATE(BURP)
+                 IF (allocated(BUCP))    DEALLOCATE(BUCP)
+                 IF (allocated(BURS))    DEALLOCATE(BURS)
+                 IF (allocated(BUCS))    DEALLOCATE(BUCS)
               ENDIF
 C             Centralized matrix: make DKEEP(4:5) available to all processors
               CALL MPI_BCAST( id%DKEEP(4),2,MPI_REAL,
      &                        MASTER, id%COMM, IERR )
-  400         CONTINUE
               IF (id%MYID.EQ.MASTER) THEN
 C               Communicator should only be
 C               freed on the master process
@@ -991,31 +1125,34 @@ C               freed on the master process
      &             id%COMM, id%MYID)
               IF (id%INFO(1).LT.0) GOTO 517
           ELSE IF (id%MYID.EQ.MASTER) THEN
-C           ----------------------------------
-C           Centralized scaling, options 1 to 6
-C           ----------------------------------
+C           -------------------
+C           Centralized scaling
+C           -------------------
             IF (KEEP(52).GT.0 .AND. KEEP(52).LE.6) THEN
 C             ---------------------
 C             Allocate temporary
 C             workspace for scaling
 C             ---------------------
-              IF ( KEEP(52) .eq. 5 .or. 
-     &          KEEP(52) .eq. 6 ) THEN
-C               We have an explicit copy of the original
-C               matrix in complex format which should probably
-C               be avoided (but do we want to keep all
-C               those old scaling options ?)
-                LWK = id%KEEP8(28)
-              ELSE
+              IF (KEEP(52) .eq. 1 ) THEN
+C               No workspace indeed needed
                 LWK = 1_8
+                LWK_REAL = 1_8
+              ELSE IF ( KEEP(52) .eq. 3 ) THEN 
+                LWK = 1_8
+                LWK_REAL = int(N,8)
+              ELSE IF ( KEEP(52) .eq. 4 ) THEN
+C               Options 3 or 4
+                LWK = 1_8
+                LWK_REAL = 2_8*int(N,8)
               END IF
-              LWK_REAL = 5 * N
+C             Real workarray
               ALLOCATE( WK_REAL( LWK_REAL ), stat = IERR )
               IF ( IERR .GT. 0 ) THEN
                 id%INFO(1) = -13
-                id%INFO(2) = LWK_REAL
+                CALL MUMPS_SET_IERROR( LWK_REAL, id%INFO(2) )
                 GOTO 137
               END IF
+C             Real/complex workarray
               ALLOCATE( WK( LWK ), stat = IERR )
               IF ( IERR .GT. 0 ) THEN
                 id%INFO(1) = -13
@@ -1030,10 +1167,40 @@ C               those old scaling options ?)
               DEALLOCATE( WK )
             ENDIF
           ENDIF
+C}
         ENDIF ! Scaling distributed matrices or centralized
+        IF (KEEP(125).NE.0) THEN
+C         ------------------------
+C           If we enable the scaling of the |A11 A12| block
+C           we set to 1 the scaling corresponding to the Schur
+C           complement matrix A22
+C         ------------------------
+            IF ((KEEP(60).GT.0) .and. (KEEP(116).GT.0)) THEN
+C            Schur is active, reset Schur entries to ONE
+             IF ( ((KEEP(52).EQ.7).OR.(KEEP(52).EQ.8)) .AND.
+     &          KEEP(54).NE.0 ) THEN
+C             Scaling available on all procs
+              DO I=1, N
+               IF (id%SYM_PERM(I).GT.id%N-KEEP(116)) THEN
+                 id%COLSCA(I) = ONE
+                 id%ROWSCA(I) = ONE
+               ENDIF
+              ENDDO
+             ELSE IF ( id%MYID .EQ. MASTER) THEN
+C             Scaling available on master
+              DO I=1, N
+               IF (id%SYM_PERM(I).GT.id%N-KEEP(116)) THEN
+                 id%COLSCA(I) = ONE
+                 id%ROWSCA(I) = ONE
+               ENDIF
+              ENDDO
+             ENDIF
+            ENDIF
+        ENDIF 
         IF (id%MYID.EQ.MASTER) THEN
             CALL MUMPS_SECFIN(TIMEET)
             id%DKEEP(92)=real(TIMEET)
+          IF (PROKG) WRITE( MPG, 140 ) TIMEET
 C         Print inf-norm after last KEEP(233) iterations of
 C         scaling option KEEP(52)=7 or 8 (SimScale)
 C
@@ -1083,6 +1250,9 @@ C       of the original matrix.
 C       ********************
 C
  137  CONTINUE
+      CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &     id%COMM, id%MYID )
+      IF (id%INFO(1).LT.0) GOTO 517
 C     Fwd in facto: in case of repeated factorizations
 C     with different Schur options we prefer to free
 C     systematically this array now than waiting for
@@ -1108,11 +1278,11 @@ C     to make it available on all processors.
       IF (id%KEEP(252) .EQ. 1) THEN
           IF ( id%MYID.NE.MASTER ) THEN
             id%KEEP(254) = N              ! Leading dimension
-            id%KEEP(255) = N*id%KEEP(253) ! Tot size
-            ALLOCATE(RHS_MUMPS(id%KEEP(255)),stat=IERR)
+            id%KEEP8(85) = int(N,8)*int(id%KEEP(253),8) ! Tot size
+            ALLOCATE(RHS_MUMPS(id%KEEP8(85)),stat=IERR)
             IF (IERR > 0) THEN
                id%INFO(1)=-13
-               id%INFO(2)=id%KEEP(255)
+               CALL MUMPS_SET_IERROR(id%KEEP8(85), id%INFO(2))
                IF (LPOK)
      &         WRITE(LP,*) 'ERROR while allocating RHS on a slave'
                NULLIFY(RHS_MUMPS)
@@ -1121,7 +1291,8 @@ C     to make it available on all processors.
           ELSE 
 C           Case of non working master
             id%KEEP(254)=id%LRHS              ! Leading dimension
-            id%KEEP(255)=id%LRHS*(id%KEEP(253)-1)+id%N ! Tot size
+            id%KEEP8(85)=int(id%LRHS,8)*int(id%KEEP(253)-1,8)+
+     &                   int(id%N,8) ! Tot size
             RHS_MUMPS=>id%RHS
             RHS_MUMPS_ALLOCATED = .FALSE.
             IF (LSCAL) THEN
@@ -1138,7 +1309,7 @@ C             transpose).
             ENDIF
           ENDIF
       ELSE
-          id%KEEP(255)=1
+          id%KEEP8(85)=1_8
           ALLOCATE(RHS_MUMPS(1),stat=IERR)
           IF (IERR > 0) THEN
              id%INFO(1)=-13
@@ -1151,7 +1322,7 @@ C             transpose).
       ENDIF
       CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &                    id%COMM, id%MYID )
-      IF ( id%INFO(1).lt.0 ) GOTO 517
+      IF ( id%INFO(1).lt.0 ) GOTO 516
       IF (KEEP(252) .EQ. 1) THEN
 C
 C         Broadcast the columns of the right-hand side
@@ -1163,14 +1334,16 @@ C         the master processor.
      &           MPI_COMPLEX, MASTER,id%COMM,IERR)
           END DO
       ENDIF
-C     Keep a copy of ICNTL(24) and make it
-C     available on all working processors.
-      KEEP(110)=id%ICNTL(24)
+      IF (id%MYID.EQ. MASTER) THEN
+C       Copy the value of ICNTL(24) and make it
+C       available on all working processors.
+        KEEP(110)=id%ICNTL(24)
+C       KEEP(110) defaults to 0 for out of range values
+        IF (KEEP(110).NE.1) KEEP(110)=0
+      ENDIF
       CALL MPI_BCAST(KEEP(110), 1, MPI_INTEGER,
      &               MASTER, id%COMM, IERR)
-C     KEEP(110) defaults to 0 for out of range values
-      IF (KEEP(110).NE.1) KEEP(110)=0
-      IF (KEEP(219).NE.0) THEN
+      IF ((KEEP(50).EQ.2).AND.(KEEP(219).NE.0)) THEN
        CALL CMUMPS_BUF_MAX_ARRAY_MINSIZE(max(KEEP(108),1),IERR)
        IF (IERR .NE. 0) THEN
 C      ------------------------
@@ -1188,6 +1361,7 @@ C               ( A row is considered as null if ||row|| < DKEEP(1) )
 C         CNTL(5) is then used to define if a large 
 C                 value is set on the diagonal or if a 1 is set
 C                 and other values in the row are reset to zeros.
+C       -rank revealing on the Schur (ICNTL(56)/KEEP(19))
 C         SEUIL* corresponds to the minimum required 
 C                absolute value of pivot.
 C         SEUIL_LDLT_NIV2 is used only in the 
@@ -1220,24 +1394,40 @@ C       Rank revealing factorisation
 C       Null pivot detection       
         COMPUTE_ANORMINF = .TRUE.
       ENDIF
+      IF (id%DKEEP(8).LT.ZERO) THEN
+C       Experimental setting of CNTL(7)
+        IF (COMPUTE_ANORMINF) THEN
+         EFF_SIZE_SCHUR = 0
+         CALL CMUMPS_ANORMINF(  id , ANORMINF, LSCAL, EFF_SIZE_SCHUR )
+C        If no schur ANORMINF fine for other cases
+        ELSE
+         ANORMINF = ZERO
+        ENDIF
+        id%DKEEP(8) = abs(id%DKEEP(8))*ANORMINF
+C       ANORMINF need be recomputed in case of schur
+        IF ((KEEP(60).GT.0).AND.KEEP(116).GT.0) ANORMINF=ZERO
+      ENDIF
 C     -------------------------------------------------------
 C        We compute ANORMINF, when needed, based on
 C        the infinite norm of Rowsca *A*Colsca
 C        and make it available on all working processes.
       IF (COMPUTE_ANORMINF) THEN
-         CALL CMUMPS_ANORMINF(  id , ANORMINF, LSCAL )
+         EFF_SIZE_SCHUR = 0
+         IF (KEEP(60).GT.0) EFF_SIZE_SCHUR = KEEP(116)
+         CALL CMUMPS_ANORMINF(  id , ANORMINF, LSCAL, EFF_SIZE_SCHUR )
       ELSE
          ANORMINF = ZERO
       ENDIF
 C
-C     Set BLR threshold
-      IF (id%DKEEP(8).LT.ZERO) THEN
-        id%DKEEP(8) = abs(id%DKEEP(8))*ANORMINF
-      ENDIF
        IF ((KEEP(19).NE.0).OR.(KEEP(110).NE.0)) THEN 
          IF (PROKG) THEN 
+           IF (KEEP(19).NE.0) THEN
            WRITE(MPG,'(A,1PD16.4)')
-     &    ' Effective value of CNTL(3)                 =',CNTL3      
+     &    ' CNTL(3) for null pivot rows/singularities  =',CNTL3      
+           ELSE
+           WRITE(MPG,'(A,1PD16.4)')
+     &    ' CNTL(3) for null pivot row detection       =',CNTL3      
+           ENDIF
          ENDIF
        ENDIF
        IF (KEEP(19).EQ.0) THEN 
@@ -1256,11 +1446,15 @@ C      sing val.
          ELSE IF  (CNTL3 .GT. ZERO) THEN
            id%DKEEP(9) = CNTL3*ANORMINF
          ELSE  !  (CNTL(3) .EQ. ZERO) THEN
+           CALL MUMPS_NPIV_CRITICAL_PATH(
+     &     N, KEEP(28), id%STEP(1), id%FRERE_STEPS(1), id%FILS(1),
+     &     id%NA(1), id%LNA, id%NE_STEPS(1), NPIV_CRITICAL_PATH )
+           id%DKEEP(9) = sqrt(REAL(NPIV_CRITICAL_PATH))*EPS*ANORMINF  
          ENDIF
          IF (PROKG) THEN 
-           WRITE(MPG, '(A,I10)')
-     &    'ICNTL(56) rank revealing effective value   =',KEEP(19)   
-           WRITE(MPG,'(A,1PD10.3)')
+           WRITE(MPG, '(A,I16)')
+     &    ' ICNTL(56) rank revealing effective value   =',KEEP(19)   
+           WRITE(MPG,'(A,1PD16.4)')
      &    ' ...Threshold for singularities on the root =',id%DKEEP(9)
          ENDIF
 C        RR postponing considers that pivot rows with norm smaller 
@@ -1270,7 +1464,7 @@ C        DKEEP(13) should be bigger than 1.
          Thresh_Seuil = id%DKEEP(13)
          IF (id%DKEEP(13).LT.1)  Thresh_Seuil = 10
          SEUIL = id%DKEEP(9)*Thresh_Seuil
-         IF (PROKG) WRITE(MPG,'(A,1PD10.3)')
+         IF (PROKG) WRITE(MPG,'(A,1PD16.4)')
      &   ' ...Threshold for postponing                =',SEUIL
        ENDIF !end KEEP(19)
        SEUIL_LDLT_NIV2 = SEUIL
@@ -1347,31 +1541,35 @@ C     Find id of root node if RR is on
         END IF
       ENDIF
 C Second pass:  set parameters for null pivot detection
-C Allocate PIVNUL_LIST in case of null pivot detection
-      LPN_LIST = 1
-      IF ( associated( id%PIVNUL_LIST) ) DEALLOCATE(id%PIVNUL_LIST)
+C Allocate PIVNUL_LIST_STRUCT in case of null pivot detection
+C and in case of rank revealing
+      KEEP(109) = 0
+      LPN_LIST  = 0
       IF(KEEP(110) .EQ. 1) THEN
-         LPN_LIST = N
+         LPN_LIST = 100
       ENDIF
       IF (KEEP(19).NE.0 .AND.
      &   (ID_ROOT.EQ.id%MYID .OR. id%MYID.EQ.MASTER)) THEN
-         LPN_LIST = N
+         LPN_LIST = 100
       ENDIF
-      ALLOCATE( id%PIVNUL_LIST(LPN_LIST),stat = IERR )
-      IF ( IERR .GT. 0 ) THEN
-        id%INFO(1)=-13
-        id%INFO(2)=LPN_LIST
-      END IF
-      id%PIVNUL_LIST(1:LPN_LIST) = 0
-      KEEP(109) = 0
+      IF (LPN_LIST.GT.0) THEN
+        PIVNUL_LIST_STRUCT%SIZE_PIVNUL_LIST = LPN_LIST
+        ALLOCATE( PIVNUL_LIST_STRUCT%PIVNUL_LIST(LPN_LIST),stat = IERR )
+        IF ( IERR .GT. 0 ) THEN
+           id%INFO(1)=-13
+           id%INFO(2)=LPN_LIST
+        END IF
+        PIVNUL_LIST_STRUCT%PIVNUL_LIST(1:LPN_LIST) = 0
+      ENDIF
 C end set parameter for null pivot detection
       CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &                    id%COMM, id%MYID )
-      IF ( id%INFO(1).lt.0 ) GOTO 517
+      IF ( id%INFO(1).lt.0 ) GOTO 516
 C   --------------------------------------------------------------
 C   STATIC PIVOTING
 C     -- Static pivoting only when RR and Null pivot detection OFF
 C   --------------------------------------------------------------
+      KEEP(97) = 0
       IF ((KEEP(19).EQ.0).AND.(KEEP(110).EQ.0)) THEN
         IF (id%MYID .EQ. MASTER) CNTL4 = id%CNTL(4)
         CALL MPI_BCAST( CNTL4, 1, MPI_REAL,
@@ -1382,14 +1580,16 @@ C
          IF ( CNTL4 .EQ. ZERO ) THEN
 C           -- set seuil to sqrt(eps)*||A||
             IF(ANORMINF .EQ. ZERO) THEN
-               CALL CMUMPS_ANORMINF(  id , ANORMINF, LSCAL )
+               EFF_SIZE_SCHUR = 0
+               IF (KEEP(60).GT.0) EFF_SIZE_SCHUR = KEEP(116)
+               CALL CMUMPS_ANORMINF( id , ANORMINF, LSCAL, 
+     &              EFF_SIZE_SCHUR )
             ENDIF
             SEUIL = sqrt(EPS) * ANORMINF
          ELSE
             SEUIL = CNTL4
          ENDIF
          SEUIL_LDLT_NIV2 = SEUIL
-C
         ELSE 
          SEUIL = ZERO
         ENDIF
@@ -1428,37 +1628,96 @@ C       -- Set MAXS to size of WK_USER_
       CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &                    id%COMM, id%MYID )
       IF (id%INFO(1) .LT. 0) THEN
-        GOTO 517
+        GOTO 516
       ENDIF
 C
       id%KEEP8(75) = huge(id%KEEP8(75))
       id%KEEP8(76) = huge(id%KEEP8(76))
-      IF ((.NOT.WK_USER_PROVIDED).AND.(I_AM_SLAVE)) THEN
+      IF (I_AM_SLAVE) THEN
 C
         IF (id%KEEP8(4) .NE. 0_8) THEN
-C        -------------------------
-C        WE TRY TO USE MEM_ALLOWED (KEEP8(4)/1E6)
-C        -------------------------
-C        Set MAXS given BLR_STRAT, KEEP(201) and MAXS_BASE_RELAXED8
-         CALL CMUMPS_MEM_ALLOWED_SET_MAXS (
-     &           MAXS,
-     &           BLR_STRAT, id%KEEP(201), MAXS_BASE_RELAXED8,
-     &           id%KEEP(1), id%KEEP8(1), id%MYID, id%N, id%NELT, 
-     &           id%NA(1), id%LNA, id%NSLAVES, 
-     &           KEEP464COPY,  KEEP465COPY,
-     &           id%INFO(1), id%INFO(2)
+C
+          IF ( .NOT. WK_USER_PROVIDED ) THEN
+C           Set MAXS given BLR_STRAT, KEEP(201) and MAXS_BASE_RELAXED8
+            CALL CMUMPS_MEM_ALLOWED_SET_MAXS (
+     &          MAXS,
+     &          BLR_STRAT, id%KEEP(201), MAXS_BASE_RELAXED8,
+     &          id%KEEP(1), id%KEEP8(1), id%MYID, id%N, id%NELT, 
+     &          id%NA(1), id%LNA, id%NSLAVES, 
+     &          KEEP464COPY,  KEEP465COPY,
+     &          id%INFO(1), id%INFO(2)
+     &           , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &           size(id%I8_L0_OMP,2)
      &           )
+C           Given  MAXS and  max memory allowed KEEP8(4)
+C           compute in KEEP8(75) the number of real/complex 
+C           available for dynamic allocations 
+            CALL  CMUMPS_MEM_ALLOWED_SET_K75 ( 
+     &           MAXS, id%MYID, 
+     &           .FALSE., ! UNDER_L0_OMP
+     &           N, id%NELT, id%NA(1), id%LNA, id%NSLAVES,
+     &           BLR_STRAT, id%KEEP(201), 
+     &           id%KEEP, id%KEEP8, id%INFO(1), id%INFO(2)
+     &           , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &           size(id%I8_L0_OMP,2)
+     &           )
+          ELSE
+C            KEEP8(75) dow not include MAXS, since WK_USER is provided
+             CALL  CMUMPS_MEM_ALLOWED_SET_K75 ( 
+     &           0_8, id%MYID, 
+     &           .FALSE., ! UNDER_L0_OMP
+     &           N, id%NELT, id%NA(1), id%LNA, id%NSLAVES,
+     &           BLR_STRAT, id%KEEP(201), 
+     &           id%KEEP, id%KEEP8, id%INFO(1), id%INFO(2)
+     &           , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &           size(id%I8_L0_OMP,2)
+     &           )
+          ENDIF
+          IF (KEEP(400) .GT.0) THEN
+C            ------------------------------
+C            compute KEEP8(75) under L0_OMP
+C            ------------------------------
+C            Save KEEP8(75) above L0_OMP to reset KEEP8(75) 
+C            when starting FAC_PAR_M
+             id%KEEP8(76) = id%KEEP8(75)
+             CALL  CMUMPS_MEM_ALLOWED_SET_K75 ( 
+     &             0_8, ! MAXS=0_8 
+     &             id%MYID, 
+     &             .TRUE., ! UNDER_L0_OMP
+     &             id%N, id%NELT, id%NA(1), id%LNA, id%NSLAVES,
+     &             BLR_STRAT, id%KEEP(201), 
+     &             id%KEEP, id%KEEP8, id%INFO(1), id%INFO(2)
+     &             , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &             size(id%I8_L0_OMP,2)
+     &             )
+C            KEEP8(75) holds the number of entries that 
+C            can be allocated underL0.
+C            It will be used during CMUMPS_FAC_L0_OMP to adjust the 
+C            the size of MUMPS_TPS_ARR(ITH)%LA 
+          ENDIF
         ENDIF ! MEM_ALLOWED
 C
-      ENDIF ! (.NOT.WK_USER_PROVIDED).AND.(I_AM_SLAVE)) THEN
+      ENDIF ! I_AM_SLAVE THEN
 C
       IF (I_AM_SLAVE) THEN
+        IF ( (KEEP(400).GT.0) .AND. (KEEP(406).EQ.2) ) THEN
+C         Compute KEEP8(77) the peak authorized used by 
+C         CMUMPS_PERFORM_COPIES
+          CALL CMUMPS_L0_COMPUTE_PEAK_ALLOWED(
+     &          id%MYID, id%N,
+     &          id%NELT, id%NA(1), id%LNA, id%NSLAVES,
+     &          BLR_STRAT, id%KEEP(201),
+     &          id%KEEP(1), id%KEEP8(1), id%INFO(1), id%INFO(2)
+     &          , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &          size(id%I8_L0_OMP,2)
+     &           )
+        ENDIF
       ENDIF ! I_AM_SLAVE)
 C
       CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &                    id%COMM, id%MYID )
       IF (id%INFO(1) .LT. 0) THEN
-        GOTO 517
+        GOTO 516
       ENDIF
       CALL MUMPS_SETI8TOI4(MAXS, id%INFO(39))
       CALL CMUMPS_AVGMAX_STAT8(PROKG, MPG, MAXS, id%NSLAVES,
@@ -1471,7 +1730,6 @@ C       Dynamic scheduling
 C       ------------------
         CALL CMUMPS_LOAD_SET_INICOST( dble(id%COST_SUBTREES),
      &        KEEP(64), id%DKEEP(15), KEEP(375), MAXS )
-        K28=KEEP(28)
         MEMORY_MD_ARG = min(int(PERLU,8) * ( MAXS_BASE8 / 100_8 + 1_8 ),
 C       Restrict freedom from dynamic scheduler when
 C       MEM_ALLOWED=ICNTL(23) is small (case where KEEP8(4)-MAXS_BASE8
@@ -1603,6 +1861,7 @@ C     -----------------------
 C     Manage main workarray S
 C     -----------------------
       EARLYT3ROOTINS = KEEP(200) .EQ.0
+     &        .OR.  ( KEEP(200) .LT. 0 .AND. KEEP(400) .EQ. 0 )
 #if defined (LARGEMATRICES)
       IF ( id%MYID .ne. MASTER ) THEN
 #endif
@@ -1637,6 +1896,10 @@ C     Initialization of modules
 C     related to data management
 C     --------------------------
       NB_ACTIVE_FRONTS_ESTIM = 3
+      NB_THREADS = 1
+!$    NB_THREADS = OMP_GET_MAX_THREADS()
+C     
+      NB_ACTIVE_FRONTS_ESTIM = 3*NB_THREADS
       IF (I_AM_SLAVE) THEN
 C
         CALL MUMPS_FDM_INIT('A',NB_ACTIVE_FRONTS_ESTIM, id%INFO)
@@ -1677,8 +1940,8 @@ C     GOTO 500: one of the above module initializations failed
       IF ( id%INFO(1).LT.0 ) GOTO 500
 C
 C
-C  Allocate space for matrix in arrowhead 
-C  ======================================
+C  Allocate space for matrix in arrowhead form
+C  ===========================================
 C
 C  CASE 1 : Matrix is assembled
 C  CASE 2 : Matrix is elemental
@@ -1689,115 +1952,108 @@ C       Space has been allocated already for
 C       the integer part during analysis
 C       Only slaves need the arrowheads.
 C       ------------------------------------
-        IF (associated( id%DBLARR)) THEN
-          DEALLOCATE(id%DBLARR)
-          NULLIFY(id%DBLARR)
-        ENDIF
         IF ( I_AM_SLAVE .and. id%KEEP8(26) .ne. 0_8 ) THEN
-          ALLOCATE( id%DBLARR( id%KEEP8(26) ), stat = IERR )
+          ALLOCATE( DBLARR( id%KEEP8(26) ),
+     &              INTARR( id%KEEP8(27) ), stat = IERR )
         ELSE
-          ALLOCATE( id%DBLARR( 1 ), stat =IERR )
+          ALLOCATE( DBLARR( 1 ),
+     &              INTARR( 1 ), stat =IERR )
         END IF
         IF ( IERR .NE. 0 ) THEN
           IF (LPOK) THEN
             WRITE(LP,*) id%MYID,
-     &      ': Allocation error for DBLARR(',id%KEEP8(26),')'
+     &      ': Allocation error for DBLARR(',id%KEEP8(26),')+INTARR(',
+     &      id%KEEP8(27),')'
           ENDIF
           id%INFO(1)=-13
-          CALL MUMPS_SET_IERROR(id%KEEP8(26), id%INFO(2))
-          NULLIFY(id%DBLARR)
+          CALL MUMPS_SET_IERROR( max(id%KEEP8(26),1_8)+
+     &                           max(id%KEEP8(27),1_8),
+     &                            id%INFO(2) )
           GOTO 100
         END IF
       ELSE
-C        ----------------------------------------
-C        Allocate variable lists. Systematically.
-C        ----------------------------------------
-         IF ( associated( id%INTARR ) ) THEN
-           DEALLOCATE( id%INTARR )
-           NULLIFY( id%INTARR )
-         END IF
+C        --------------------------------
+C        Allocate element variables lists
+C        --------------------------------
          IF ( I_AM_SLAVE .and. id%KEEP8(27) .ne. 0_8 ) THEN
-           ALLOCATE( id%INTARR( id%KEEP8(27) ), stat = allocok )
+           ALLOCATE( INTARR( id%KEEP8(27) ), stat = allocok )
            IF ( allocok .GT. 0 ) THEN
              id%INFO(1) = -13
              CALL MUMPS_SET_IERROR(id%KEEP8(27), id%INFO(2))
-             NULLIFY(id%INTARR)
              GOTO 100
            END IF
          ELSE
-           ALLOCATE( id%INTARR(1),stat=allocok )
+C          INTARR also allocated of size 1 on non-working master
+           ALLOCATE( INTARR(1),stat=allocok )
            IF ( allocok .GT. 0 ) THEN
              id%INFO(1) = -13
              id%INFO(2) = 1
-             NULLIFY(id%INTARR)
              GOTO 100
            END IF
          END IF
-C        -----------------------------
-C        Allocate real values.
-C        On master, if hybrid host and
-C        no scaling, avoid the copy.
-C        -----------------------------
-         IF (associated( id%DBLARR)) THEN
-           DEALLOCATE(id%DBLARR)
-           NULLIFY(id%DBLARR)
-         ENDIF
+C        ---------------------------------------
+C        Allocate DBLARR to hold possibly scaled
+C        copies of elemental matrices
+C        On a working master (hybrid host) and
+C        no scaling, avoid the copy and point
+C        directly to user data instead.
+C        ---------------------------------------
          IF ( I_AM_SLAVE ) THEN
            IF (      id%MYID_NODES .eq. MASTER
      &       .AND.   KEEP(46)   .eq. 1
      &       .AND.   KEEP(52)   .eq. 0 ) THEN
-C            --------------------------
-C            Simple pointer association
-C            --------------------------
-             id%DBLARR => id%A_ELT
+C            -------------------
+C            Pointer association
+C            -------------------
+             DBLARR => id%A_ELT
            ELSE
 C            ----------
 C            Allocation
 C            ----------
-             IF ( id%KEEP8(26) .ne. 0_8 ) THEN
-               ALLOCATE( id%DBLARR( id%KEEP8(26) ), stat = allocok )
-               IF ( allocok .GT. 0 ) THEN
-                 id%INFO(1) = -13
-                 CALL MUMPS_SET_IERROR(id%KEEP8(26), id%INFO(2))
-                 NULLIFY(id%DBLARR)
-                 GOTO 100
-               END IF
-             ELSE
-               ALLOCATE( id%DBLARR(1), stat = allocok )
-               IF ( allocok .GT. 0 ) THEN
-                 id%INFO(1) = -13
-                 id%INFO(2) = 1
-                 NULLIFY(id%DBLARR)
-                 GOTO 100
-               END IF 
+             ALLOCATE( DBLARR( max(id%KEEP8(26),1_8) ), stat=allocok )
+             IF ( allocok .GT. 0 ) THEN
+               id%INFO(1) = -13
+               CALL MUMPS_SET_IERROR(max(id%KEEP8(26),1_8), id%INFO(2))
+               NULLIFY(DBLARR)
+               GOTO 100
              END IF
            END IF
          ELSE
-           ALLOCATE( id%DBLARR(1), stat = allocok )
+           ALLOCATE( DBLARR(1), stat = allocok )
            IF ( allocok .GT. 0 ) THEN
              id%INFO(1) = -13
              id%INFO(2) = 1
-             NULLIFY(id%DBLARR)
+             NULLIFY(DBLARR)
              GOTO 100
            END IF
          END IF
       END IF
-C     -----------------
-C     Also prepare some
-C     data for the root
-C     -----------------
-      IF ( KEEP(38).NE.0 .AND.  I_AM_SLAVE ) THEN
-         CALL CMUMPS_INIT_ROOT_FAC( id%N,
-     &   id%root, id%FILS(1), KEEP(38), id%KEEP(1), id%INFO(1) )
-      END IF
-C
-C
  100  CONTINUE
 C     ----------------
 C     Check for errors
 C     ----------------
       CALL MUMPS_PROPINFO( id%ICNTL(1), id%INFO(1),
-     &                        id%COMM, id%MYID )
+     &                     id%COMM, id%MYID )
+      IF ( id%INFO(1).LT.0 ) GOTO 500
+C     ------------------------------------------
+C     Prepare stuff for the 2D block-cyclic root
+C     ------------------------------------------
+      IF ( KEEP(38).NE.0 ) THEN
+          ALLOCATE(id%root%RG2L(id%N), stat=allocok)
+          IF ( allocok .NE. 0 ) THEN
+            id%INFO(1)=-13
+            id%INFO(2)=id%N
+          END IF
+        IF ( id%INFO(1) .GE.0 ) THEN
+          CALL CMUMPS_INIT_ROOT_FAC( id%N, id%MYID,
+     &    id%root, id%FILS(1), id%KEEP(1) )
+        ENDIF
+      ENDIF
+C     ----------------
+C     Check for errors
+C     ----------------
+      CALL MUMPS_PROPINFO( id%ICNTL(1), id%INFO(1),
+     &                     id%COMM, id%MYID )
       IF ( id%INFO(1).LT.0 ) GOTO 500
 C
 C       -----------------------------------
@@ -1825,6 +2081,7 @@ C     -------------------------------------------
       ENDIF
 C
       IF ( KEEP( 55 ) .eq. 0 ) THEN
+C     {
 C       ----------------------------
 C       Original matrix is assembled
 C       Arrowhead format to be used.
@@ -1850,12 +2107,13 @@ C     EARLYT3ROOTINS (KEEP(200)=1), root will
 C     be assembled into id%S later and size of
 C     id%S will be checked later)
 C     ---------------------------------------------
-      IF (EARLYT3ROOTINS .AND. KEEP(38).NE.0 .AND. I_AM_SLAVE) THEN
-        LWK = int(numroc( id%root%ROOT_SIZE, id%root%MBLOCK,
+      IF (EARLYT3ROOTINS .AND. KEEP(38).NE.0 .AND.
+     &    KEEP(60) .EQ.0 .AND. I_AM_SLAVE) THEN
+        LWK = int(MUMPS_NUMROC( id%root%ROOT_SIZE, id%root%MBLOCK,
      &             id%root%MYROW, 0, id%root%NPROW ),8)
         LWK = max( 1_8, LWK )
         LWK = LWK*
-     &        int(numroc( id%root%ROOT_SIZE, id%root%NBLOCK,
+     &        int(MUMPS_NUMROC( id%root%ROOT_SIZE, id%root%NBLOCK,
      &        id%root%MYCOL, 0, id%root%NPCOL ),8)
         LWK = max( 1_8, LWK )
       ELSE
@@ -1872,18 +2130,130 @@ C     arrowheads of root.
      &                        id%COMM, id%MYID )
       IF ( id%INFO(1).LT.0 ) GOTO 500
 C
+C     =====================================================
+      IF (KEEP(399).GE.2) THEN
+C{    Multihtreaded algorithm taking into account all cases
+C     =====================================================
+C
+C        Timing on master.
+         IF (id%MYID.EQ.MASTER) THEN
+           CALL MUMPS_SECDEB(TIME)
+         END IF
+C
+         NZ_loc8   = 0_8
+         NBRECORDS = KEEP(39)
+         SIZESCAL = id%N
+C        Set  NZ_loc8, A_loc_PTR, IRN_loc_PTR, JCN_loc_PTR
+C        and update NBRECORDS
+         IF (KEEP(54).EQ.0) THEN
+C         centralized matrix
+          IF (id%KEEP8(28) .LT. int(NBRECORDS,8)) THEN
+              NBRECORDS = int(id%KEEP8(28))
+          ENDIF
+          IF (id%MYID.EQ.MASTER) THEN
+           NZ_loc8 = id%KEEP8(28)
+           A_loc_PTR   => id%A
+           IRN_loc_PTR => id%IRN
+           JCN_loc_PTR => id%JCN
+           IF (LSCAL) THEN
+             COLSCA_PTR => id%COLSCA
+             ROWSCA_PTR => id%ROWSCA
+           ELSE
+             COLSCA_PTR  => DUMMYSCA
+             ROWSCA_PTR  => DUMMYSCA
+             SIZESCAL  = 1
+           ENDIF
+          ELSE
+           A_loc_PTR   => DUMMYA_loc
+           IRN_loc_PTR => DUMMYIRN_loc
+           JCN_loc_PTR => DUMMYJCN_loc
+           COLSCA_PTR  => DUMMYSCA
+           ROWSCA_PTR  => DUMMYSCA
+           SIZESCAL  = 1
+          ENDIF
+         ELSE
+C         distributed matrix
+C         ---------------------------------------------------
+C         In order to have possibly IRN_loc/JCN_loc/A_loc
+C         of size 0, avoid to pass them inside REDISTRIBUTION
+C         and pass id instead
+C         NZ_locMAX8 gives as a maximum buffer size (send/recv) used
+C          an upper bound to limit buffers on small matrices
+C         ---------------------------------------------------
+          CALL MPI_ALLREDUCE(id%KEEP8(29), NZ_locMAX8, 1, 
+     &              MPI_INTEGER8, MPI_MAX, id%COMM, IERR)
+          IF (NZ_locMAX8 .LT. int(NBRECORDS,8)) THEN
+              NBRECORDS = int(NZ_locMAX8)
+          ENDIF
+          NZ_loc8 = id%KEEP8(29)
+          LSCAL   = (KEEP(52).EQ.7).OR.(KEEP(52).EQ.8)
+C         available on all MPI
+          IF (LSCAL) THEN
+            COLSCA_PTR => id%COLSCA
+            ROWSCA_PTR => id%ROWSCA
+          ELSE
+           COLSCA_PTR  => DUMMYSCA
+           ROWSCA_PTR  => DUMMYSCA
+           SIZESCAL  = 1
+          ENDIF
+         ENDIF
+#if ! defined(PCPRET)
+          IF (id%KEEP(72).EQ.1) THEN
+           NBRECORDS = max(3,NBRECORDS/10)
+          ENDIF
+         CALL CMUMPS_FAC_DIST_ARROWHEADS_OMP ( id%N,
+     &     NZ_loc8, 
+C          replace id by:
+     &        A_loc_PTR(1), IRN_loc_PTR(1), JCN_loc_PTR(1),
+     &        SIZESCAL, LSCAL, COLSCA_PTR(1), ROWSCA_PTR(1), 
+     &     DBLARR(1), id%KEEP8(26), INTARR(1),
+     &     id%KEEP8(27),
+     &     id%PTR8ARR(1), id%NINCOLARR(1),
+     &     id%NINROWARR(1), id%PTRDEBARR(1),
+     &     id%FILS(1),
+     &     KEEP(1), id%KEEP8(1), id%MYID, id%COMM, NBRECORDS,
+     &     S_PTR_ARG(1), MAXS_ARG, id%root, id%PROCNODE_STEPS(1),
+     &     id%NPROCS, id%NSLAVES, id%SYM_PERM(1), id%STEP(1),
+     &     id%ICNTL(1), id%INFO(1), NSEND8, NLOCAL8,
+     &     id%ISTEP_TO_INIV2(1),
+     &     id%CANDIDATES(1,1) 
+     &     )
+         CALL MPI_BARRIER(id%COMM, IERR)
+#else 
+#endif
+C     
+         IF ( KEEP(46) .eq. 0 .AND. id%MYID.eq.MASTER ) THEN
+C          ------------------------------
+C          The host is not working -> had
+C          no data from initial matrix
+C          ------------------------------
+           NSEND8  = 0_8
+           NLOCAL8 = 0_8
+         END IF
+C        -------------------------
+C        Check for possible errors
+C        -------------------------
+         CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &                    id%COMM, id%MYID )
+         IF ( id%INFO( 1 ) .LT. 0 ) GOTO 500
+         CALL MPI_REDUCE( NSEND8, NSEND_TOT8, 1, MPI_INTEGER8,
+     &                 MPI_SUM, MASTER, id%COMM, IERR )
+         CALL MPI_REDUCE( NLOCAL8, NLOCAL_TOT8, 1, MPI_INTEGER8,
+     &                 MPI_SUM, MASTER, id%COMM, IERR )
+         IF ( PROKG ) THEN
+           WRITE(MPG,125) NLOCAL_TOT8, NSEND_TOT8
+         END IF
+C}        
+      ELSE
+C{   =======================================================
       IF ( KEEP(54) .eq. 0 ) THEN
+C     {
 C       ================================================
 C       FIRST CASE : MATRIX IS NOT INITIALLY DISTRIBUTED
 C       ================================================
 C       A small integer workspace is needed to
 C       send the arrowheads.
         IF ( id%MYID .eq. MASTER ) THEN
-          ALLOCATE(IWK(id%N), stat=allocok)
-          IF ( allocok .NE. 0 ) THEN
-            id%INFO(1)=-13
-            id%INFO(2)=id%N
-          END IF
 #if defined(LARGEMATRICES)
           ALLOCATE (WK(LWK),stat=IERR)
           IF ( IERR .GT. 0 ) THEN
@@ -1905,16 +2275,6 @@ C         also in global communicator
 C         IWK is used as temporary
 C         workspace of size N.
 C         --------------------------------
-           IF ( .not. associated( id%INTARR ) ) THEN
-              ALLOCATE( id%INTARR( 1 ),stat=IERR)
-              IF ( IERR .GT. 0 ) THEN
-                 id%INFO(1) = -13
-                 id%INFO(2) = 1
-                 NULLIFY(id%INTARR)
-                 write(6,*) ' PB2 ALLOC INTARR'
-                 CALL MUMPS_ABORT()
-              ENDIF
-           ENDIF
           NBRECORDS = KEEP(39)
           IF (id%KEEP8(28) .LT. int(NBRECORDS,8)) THEN
             NBRECORDS = int(id%KEEP8(28))
@@ -1922,17 +2282,18 @@ C         --------------------------------
 #if defined(LARGEMATRICES)
           CALL CMUMPS_FACTO_SEND_ARROWHEADS(id%N, id%KEEP8(28), id%A(1),
      &      id%IRN(1), id%JCN(1), id%SYM_PERM(1),
-     &      LSCAL, id%COLSCA(1), id%ROWSCA(1),   
+     &      LSCAL, id%COLSCA(1), id%ROWSCA(1),
      &      id%MYID, id%NSLAVES, id%PROCNODE_STEPS(1),
      &      NBRECORDS,
-     &      LP, id%COMM, id%root, KEEP,id%KEEP8,
-     &      id%FILS(1), IWK(1), ! workspace of size N
+     &      id%COMM, id%root, KEEP,id%KEEP8,
+     &      id%FILS(1),
      &
-     &      id%INTARR(1), id%KEEP8(27), id%DBLARR(1), id%KEEP8(26),
-     &      id%PTRAR(1), id%PTRAR(id%N+1),
+     &      INTARR(1), id%KEEP8(27), DBLARR(1), id%KEEP8(26),
+     &      id%PTR8ARR(1), id%NINCOLARR(1),
+     &      id%NINROWARR(1), id%PTRDEBARR(1),
      &      id%FRERE_STEPS(1), id%STEP(1), WK(1), LWK,
      &      id%ISTEP_TO_INIV2(1), id%I_AM_CAND(1),
-     &      id%CANDIDATES(1,1)) 
+     &      id%CANDIDATES(1,1), id%ICNTL(1), id%INFO(1) )
 C         write(6,*) '!!! A,IRN,JCN are freed during factorization '
           DEALLOCATE (id%A)
           NULLIFY(id%A)
@@ -1962,42 +2323,43 @@ C         write(6,*) '!!! A,IRN,JCN are freed during factorization '
           ENDIF
           DEALLOCATE (WK)
 #else
-          CALL CMUMPS_FACTO_SEND_ARROWHEADS(id%N, id%KEEP8(28), id%A(1),
-     &    id%IRN(1), id%JCN(1), id%SYM_PERM(1),
+          CALL CMUMPS_FACTO_SEND_ARROWHEADS(id%N, id%KEEP8(28),
+     &    id%A(1), id%IRN(1), id%JCN(1), id%SYM_PERM(1),
      &    LSCAL, id%COLSCA(1), id%ROWSCA(1),   
      &    id%MYID, id%NSLAVES, id%PROCNODE_STEPS(1),
      &    NBRECORDS,
-     &    LP, id%COMM, id%root, KEEP(1),id%KEEP8(1),
-     &    id%FILS(1), IWK(1),
+     &    id%COMM, id%root, KEEP(1),id%KEEP8(1),
+     &    id%FILS(1),
      &
-     &    id%INTARR(1), id%KEEP8(27), id%DBLARR(1), id%KEEP8(26),
-     &    id%PTRAR(1), id%PTRAR(id%N+1),
+     &    INTARR(1), id%KEEP8(27), DBLARR(1), id%KEEP8(26),
+     &    id%PTR8ARR(1), id%NINCOLARR(1),
+     &    id%NINROWARR(1), id%PTRDEBARR(1),
      &    id%FRERE_STEPS(1), id%STEP(1), S_PTR_ARG(1), MAXS_ARG,
      &    id%ISTEP_TO_INIV2(1), id%I_AM_CAND(1),
-     &    id%CANDIDATES(1,1) ) 
+     &    id%CANDIDATES(1,1), id%ICNTL(1), id%INFO(1) )
 #endif
-          DEALLOCATE(IWK)
         ELSE
           NBRECORDS = KEEP(39)
           IF (id%KEEP8(28) .LT. int(NBRECORDS,8)) THEN
             NBRECORDS = int(id%KEEP8(28))
           ENDIF
           CALL CMUMPS_FACTO_RECV_ARROWHD2( id%N,
-     &       id%DBLARR(1), id%KEEP8(26),
-     &       id%INTARR(1), id%KEEP8(27),
-     &       id%PTRAR( 1 ),
-     &       id%PTRAR(id%N+1),
-     &       KEEP( 1 ), id%KEEP8(1), id%MYID, id%COMM,
+     &       DBLARR(1), id%KEEP8(26),
+     &       INTARR(1), id%KEEP8(27),
+     &       id%PTR8ARR(1), id%NINCOLARR(1),
+     &       id%NINROWARR(1), id%PTRDEBARR(1),
+     &       KEEP( 1 ), id%KEEP8(1), id%FILS(1), id%MYID, id%COMM,
      &       NBRECORDS,
      &
      &       S_PTR_ARG(1), MAXS_ARG,
      &       id%root,
      &       id%PROCNODE_STEPS(1), id%NSLAVES,
      &       id%SYM_PERM(1), id%FRERE_STEPS(1), id%STEP(1),
-     &       id%INFO(1), id%INFO(2) )
+     &       id%ICNTL(1), id%INFO(1) )
         ENDIF
+C     }
       ELSE
-C
+C     {
 C     =============================================
 C     SECOND CASE : MATRIX IS INITIALLY DISTRIBUTED
 C     =============================================
@@ -2006,6 +2368,7 @@ C     Timing on master.
         CALL MUMPS_SECDEB(TIME)
       END IF
       IF ( I_AM_SLAVE ) THEN
+C     {
 C       ---------------------------------------------------
 C       In order to have possibly IRN_loc/JCN_loc/A_loc
 C       of size 0, avoid to pass them inside REDISTRIBUTION
@@ -2013,17 +2376,20 @@ C       and pass id instead
 C       NZ_locMAX8 gives as a maximum buffer size (send/recv) used
 C        an upper bound to limit buffers on small matrices
 C       ---------------------------------------------------
-       CALL MPI_ALLREDUCE(id%KEEP8(29), NZ_locMAX8, 1, MPI_INTEGER8,
-     &                   MPI_MAX, id%COMM_NODES, IERR)
-       NBRECORDS = KEEP(39)
-       IF (NZ_locMAX8 .LT. int(NBRECORDS,8)) THEN
+        CALL MPI_ALLREDUCE(id%KEEP8(29), NZ_locMAX8, 1, MPI_INTEGER8,
+     &                     MPI_MAX, id%COMM_NODES, IERR)
+        NBRECORDS = KEEP(39)
+        IF (NZ_locMAX8 .LT. int(NBRECORDS,8)) THEN
             NBRECORDS = int(NZ_locMAX8)
-       ENDIF
+        ENDIF
         CALL CMUMPS_REDISTRIBUTION( id%N,
      &  id%KEEP8(29),
      &  id,
-     &  id%DBLARR(1), id%KEEP8(26), id%INTARR(1),
-     &  id%KEEP8(27), id%PTRAR(1), id%PTRAR(id%N+1),
+     &  DBLARR(1), id%KEEP8(26), INTARR(1),
+     &  id%KEEP8(27),
+     &  id%PTR8ARR(1), id%NINCOLARR(1),
+     &  id%NINROWARR(1), id%PTRDEBARR(1),
+     &  id%FILS(1),
      &  KEEP(1), id%KEEP8(1), id%MYID_NODES,
      &  id%COMM_NODES, NBRECORDS,
      &  S_PTR_ARG(1), MAXS_ARG, id%root, id%PROCNODE_STEPS(1),
@@ -2059,25 +2425,32 @@ C         -------------------------------------------------
 C      deallocate id%IRN_loc, id%JCN(loc) to free extra space
 C      Note that in this case IRN_loc cannot be used
 C      anymore during the solve phase for IR and Error analysis.
-         IF (associated(id%IRN_loc)) THEN
-            DEALLOCATE(id%IRN_loc)
-            NULLIFY(id%IRN_loc)
-         ENDIF
-         IF (associated(id%JCN_loc)) THEN
-            DEALLOCATE(id%JCN_loc)
-            NULLIFY(id%JCN_loc)
-         ENDIF
-         IF (associated(id%A_loc)) THEN
-            DEALLOCATE(id%A_loc)
-            NULLIFY(id%A_loc)
-         ENDIF
-       write(6,*) ' Warning :', 
+        IF (associated(id%IRN_loc)) THEN
+           DEALLOCATE(id%IRN_loc)
+           NULLIFY(id%IRN_loc)
+        ENDIF
+        IF (associated(id%JCN_loc)) THEN
+           DEALLOCATE(id%JCN_loc)
+           NULLIFY(id%JCN_loc)
+        ENDIF
+        IF (associated(id%A_loc)) THEN
+           DEALLOCATE(id%A_loc)
+           NULLIFY(id%A_loc)
+        ENDIF
+        write(6,*) ' Warning :', 
      &        ' id%A_loc, IRN_loc, JCN_loc deallocated !!! '
 #endif
-      IF (PROK) THEN
-        WRITE(MP,120) NLOCAL8, NSEND8
-      END IF
-      END IF
+        IF (PROK) THEN
+          WRITE(MP,120) NLOCAL8, NSEND8
+        END IF
+C     }
+      END IF ! I_AM_SLAVE
+C     -------------------------
+C     Check for possible errors
+C     -------------------------
+      CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &                    id%COMM, id%MYID )
+      IF ( id%INFO( 1 ) .LT. 0 ) GOTO 500
       IF ( KEEP(46) .eq. 0 .AND. id%MYID.eq.MASTER ) THEN
 C       ------------------------------
 C       The host is not working -> had
@@ -2096,16 +2469,13 @@ C     --------------------------
       IF ( PROKG ) THEN
         WRITE(MPG,125) NLOCAL_TOT8, NSEND_TOT8
       END IF
-C
-C     -------------------------
-C     Check for possible errors
-C     -------------------------
-      CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
-     &                    id%COMM, id%MYID )
-      IF ( id%INFO( 1 ) .LT. 0 ) GOTO 500
-C
-      ENDIF
+C     }
+      ENDIF ! distributed matrix
+C     }
+      ENDIF !  "old" multithreaded algorithm 
+C     }
       ELSE
+C     {
 C       -------------------
 C       Matrix is elemental,
 C       provided on the
@@ -2126,7 +2496,7 @@ C
      &     id%COMM, id%MYID,
      &     id%NSLAVES, id%PTRAR(1),
      &     id%PTRAR(id%NELT+2),
-     &     id%INTARR(1), id%DBLARR(1), id%KEEP8(27), id%KEEP8(26),
+     &     INTARR(1), DBLARR(1), id%KEEP8(27), id%KEEP8(26),
      &     id%KEEP(1), id%KEEP8(1), MAXELT_SIZE,
      &     id%FRTPTR(1), id%FRTELT(1),
      &     S_PTR_ARG(1), MAXS_ARG, id%FILS(1),
@@ -2137,6 +2507,7 @@ C       ----------------
         CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &                    id%COMM, id%MYID )
         IF ( id%INFO( 1 ) .LT. 0 ) GOTO 500
+C     }
       END IF ! Element entry
 C     ------------------------
 C     Time the redistribution:
@@ -2146,6 +2517,34 @@ C     ------------------------
         id%DKEEP(93) = real(TIME)
         IF (PROKG) WRITE(MPG,160) id%DKEEP(93)
       END IF
+C     -------------------------------------
+C     Small memory optimizaiton: we can now
+C     free RG2L on the non working host,
+C     -------------------------------------
+      IF (id%KEEP(38) .NE. 0 .AND. .NOT. I_AM_SLAVE) THEN
+          IF (associated(id%root%RG2L)) THEN
+            DEALLOCATE(id%root%RG2L)
+            NULLIFY   (id%root%RG2L)
+          ENDIF
+      ENDIF
+      IF ( KEEP(400) .GT. 0 ) THEN
+C       L0-OMP was active at analysis and
+C       thus will be active at factorization
+C       We check the number of threads.
+        NOMP=1
+!$      NOMP = omp_get_max_threads()
+          IF ( NOMP .NE. KEEP(400) ) THEN
+            id%INFO(1)=-58
+            id%INFO(2)=KEEP(400)
+            IF (LPOK) WRITE(LP,'(A,A,I5,A,I5)')
+     &" FAILURE DETECTED IN FACTORIZATION: #threads for KEEP(401)",
+     &" changed from",KEEP(400)," at analysis to", NOMP
+          ENDIF
+C       error check
+        CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &                    id%COMM, id%MYID )
+        IF ( id%INFO( 1 ) .LT. 0 ) GOTO 500
+      ENDIF
 C
 C     TIMINGS:
 C     Next line: elapsed time for factorization
@@ -2181,18 +2580,37 @@ C       Ensure a reasonable minimal buffer size
 C       ---------------------------------------
         CMUMPS_LBUFR_BYTES8 = max( CMUMPS_LBUFR_BYTES8,
      &                      100000_8 )
+        IF ((KEEP(50).NE.0).AND.(KEEP(489).GT.0).AND.
+     &       (id%NSLAVES.GE.2)) THEN
+C        ----------------------------------------------------------
+C        Ensure large enough receive buffer in case of BLR with
+C        CompressCB for symmetric matrices. 
+C        -----------------------------------------------------------
+          RATIOK465 = real(KEEP465COPY)/real(1000)
+          CMUMPS_LBUFR_BYTES8 = max (CMUMPS_LBUFR_BYTES8, 
+     &     int( 
+     &       RATIOK465*
+     &       real(
+     &        int(KEEP(2)+1,8)*int(KEEP(142),8)*int(KEEP(35),8) 
+     &           ) 
+     &       ,8)
+     &                              )
+        ENDIF
 C
 C  If there is pivoting, size of the message might still increase.
 C  We use a relaxation (so called PERLU) to increase the estimate.
 C
 C  Note: PERLU is a global estimate for pivoting. 
-C  It may happen that one large contribution block size is increased by more than that.
-C  This is why we use an extra factor 2 relaxation coefficient for the relaxation of
+C  It may happen that one large contribution block size is increased 
+C  by more than that.
+C  This is why we use an extra factor 2 relaxation coefficient for 
+C  the relaxation of
 C  the reception buffer in the case where pivoting is allowed.
 C  A more dynamic strategy could be applied: if message to
 C  be received is larger than expected, reallocate a larger
 C  buffer. (But this won't work with IRECV.)
-C  Finally, one may want (as we are currently doing it for moste messages)
+C  Finally, one may want (as we are currently doing it for 
+C  most messages)
 C  to cut large messages into a series of smaller ones.
 C
         IF (KEEP(48).EQ.5) THEN
@@ -2205,8 +2623,15 @@ C
      &        + int( 2.0E0 * real(max(PERLU,MIN_PERLU))*
      &        real(CMUMPS_LBUFR_BYTES8)/100E0, 8)
         CMUMPS_LBUFR_BYTES8 = min(CMUMPS_LBUFR_BYTES8,
-     &                            int(huge (KEEP(44))-100,8))
+     &                            int(huge(I4)-100,8))
         CMUMPS_LBUFR_BYTES  = int( CMUMPS_LBUFR_BYTES8 )
+C       CMUMPS_LBUFR is the size of the buffer as a number of integers,
+C       we round CMUMPS_LBUFR (size in #integers) above to have at least
+C       CMUMPS_LBUFR_BYTES available in the buffer.
+        CMUMPS_LBUFR = (CMUMPS_LBUFR_BYTES+KEEP(34)-1)/KEEP(34)
+C       Finally, make CMUMPS_LBUFR_BYTES a multiple of KEEP(34) by setting
+C       CMUMPS_LBUFR_BYTES to the number of bytes that will be allocated
+        CMUMPS_LBUFR_BYTES = CMUMPS_LBUFR*KEEP(34)
         IF (KEEP(48)==5) THEN
 C          Since the buffer is going to be allocated, use
 C          it as the constraint for memory/granularity
@@ -2236,7 +2661,7 @@ C   -----------
      &                 + int( 2.0E0 * real(max(PERLU,MIN_PERLU))*
      &                   real(CMUMPS_LBUF8)/100E0, 8)
 C       Make CMUMPS_LBUF8 small enough to be stored in a standard integer
-        CMUMPS_LBUF8 = min(CMUMPS_LBUF8, int(huge (KEEP(43))-100,8))
+        CMUMPS_LBUF8 = min(CMUMPS_LBUF8, int(huge(I4)-100,8))
 C
 C       No reason to have send buffer smaller than receive buffer.
 C       This should never occur with the formulas above but just
@@ -2277,12 +2702,17 @@ C       are in numbers of bytes).
         IF ( PROK ) THEN
           WRITE( MP, 9999 ) CMUMPS_LBUFR_BYTES,
      &                      CMUMPS_LBUF, CMUMPS_LBUF_INT
+        ELSE 
+         IF (PROKG) THEN
+          WRITE( MPG, 9999 ) CMUMPS_LBUFR_BYTES,
+     &                      CMUMPS_LBUF, CMUMPS_LBUF_INT
+         ENDIF
         END IF
  9999   FORMAT( /,' Allocated buffers',/,' ------------------',/,
-     &  ' Size of reception buffer in bytes ...... = ', I10,
+     &  ' Size of reception buffer in bytes ...... = ', I12,
      &  /,
-     &  ' Size of async. emission buffer (bytes).. = ', I10,/,
-     &  ' Small emission buffer (bytes) .......... = ', I10)
+     &  ' Size of async. emission buffer (bytes).. = ', I12,/,
+     &  ' Small emission buffer (bytes) .......... = ', I12)
 C       --------------------------
 C       Allocate small send buffer
 C       required for CMUMPS_FAC_B
@@ -2304,7 +2734,6 @@ C       --------------------------------------
 C       Allocate reception buffer on all procs
 C       This is done now.
 C       --------------------------------------
-        CMUMPS_LBUFR = (CMUMPS_LBUFR_BYTES+KEEP(34)-1)/KEEP(34)
         ALLOCATE( BUFR( CMUMPS_LBUFR ),stat=IERR )
         IF ( IERR .NE. 0 ) THEN
           id%INFO(1) = -13
@@ -2331,14 +2760,18 @@ C         KEEP(15)=KEEP(225) if non panel)
 C         In-core or reals for factors not stored
           MAXIS_ESTIM   = KEEP(15)
         ENDIF
-        MAXIS = max( 1,
-     &       MAXIS_ESTIM + 3 * max(PERLU,10) * 
-     &          ( MAXIS_ESTIM / 100 + 1 )
-     &  )
+        MAXIS = max( 1, int( min(  int(huge(MAXIS),8),
+     &          int(MAXIS_ESTIM,8) + 3_8 * max(int(PERLU,8),10_8) *
+     &          ( int(MAXIS_ESTIM,8) / 100_8 + 1_8 )
+     &                          )   ! min
+     &                     )  ! int
+     &             ) !max
 C       ----------------------------
 C       Allocate PTLUST_S and PTRFAC
 C       They will be used to access
 C       factors in the solve phase.
+C       They are also needed for
+C       CMUMPS_FAC_L0_OMP.
 C       ----------------------------
         ALLOCATE( id%PTLUST_S( id%KEEP(28) ), stat = IERR )
         IF ( IERR .NE. 0 ) THEN
@@ -2446,7 +2879,7 @@ C       ------------------------------------
 C       Call effective factorization routine
 C       ------------------------------------
         IF ( KEEP(55) .eq. 0 ) THEN
-          LDPTRAR = id%N
+          LDPTRAR = 1 ! PTRAR no longer used (of size 2)
         ELSE
           LDPTRAR = id%NELT + 1
         END IF
@@ -2460,13 +2893,47 @@ C         ------------------------------
           NELT_arg = 1
         END IF
       ENDIF
+      IF (I_AM_SLAVE) THEN
+        IF (associated(id%L0_OMP_MAPPING))
+     &    DEALLOCATE(id%L0_OMP_MAPPING)
+        IF (KEEP(400) .GT. 0) THEN
+          id%LL0_OMP_MAPPING = KEEP(28)
+        ELSE
+          id%LL0_OMP_MAPPING = 1
+        ENDIF
+        ALLOCATE(id%L0_OMP_MAPPING(id%LL0_OMP_MAPPING), stat=allocok)
+        IF ( allocok > 0) THEN
+            write(*,*) "Problem allocating L0_OMP_MAPPING",
+     &              IERR, KEEP(28)
+            GOTO 115
+        ENDIF
+        IF (associated(id%L0_OMP_FACTORS)) THEN
+          CALL CMUMPS_FREE_L0_OMP_FACTORS(id%L0_OMP_FACTORS)
+        ENDIF
+        IF (KEEP(400) .GT. 0) THEN
+          id%LL0_OMP_FACTORS = KEEP(400)
+        ELSE
+          id%LL0_OMP_FACTORS = 1
+        ENDIF
+        ALLOCATE(id%L0_OMP_FACTORS(id%LL0_OMP_FACTORS),stat = allocok)
+        IF (allocok > 0) THEN
+           id%INFO(1)=-7
+           id%INFO(2)=NB_THREADS
+           GOTO 111
+        ENDIF
+        CALL CMUMPS_INIT_L0_OMP_FACTORS(id%L0_OMP_FACTORS)
+      ENDIF
+ 115  CONTINUE
+      CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &                    id%COMM, id%MYID )
+      IF ( id%INFO( 1 ) .LT. 0 ) GOTO 500
 C     Compute DKEEP(17) 
       AVG_FLOPS    =  RINFOG(1)/(real(id%NSLAVES))
       id%DKEEP(17) = max ( id%DKEEP(18), AVG_FLOPS/real(50) )
      &               
       IF (PROK.AND.id%MYID.EQ.MASTER) THEN
         IF (id%NSLAVES.LE.1) THEN
-         WRITE(MPG,'(/A,A,1PD10.3)')
+         WRITE(MP,'(/A,A,1PD10.3)')
      &' Start factorization with total', 
      &' estimated flops (RINFOG(1))                         = ', 
      &   RINFOG(1)
@@ -2482,20 +2949,32 @@ C       IS/S pointers passed to CMUMPS_FAC_B with
 C       implicit interface through intermediate
 C       structure S_IS_POINTERS. IS will be allocated
 C       during CMUMPS_FAC_B.
+C       In case of L0OMP, id%IS and id%S are allocated during
+C       CMUMPS_FAC_B, and only after L0OMP nodes are processed,
+C       in order to limit the global memory peak. 
         S_IS_POINTERS%IW => id%IS; NULLIFY(id%IS)
         S_IS_POINTERS%A  => id%S ; NULLIFY(id%S)
         CALL CMUMPS_FAC_B(id%N,S_IS_POINTERS,MAXS,MAXIS,id%SYM_PERM(1),
      &  id%NA(1),id%LNA,id%NE_STEPS(1),id%ND_STEPS(1), id%FILS(1),
      &  id%STEP(1),id%FRERE_STEPS(1),id%DAD_STEPS(1),id%CANDIDATES(1,1),
      &  id%ISTEP_TO_INIV2(1),id%TAB_POS_IN_PERE(1,1), id%PTRAR(1),
-     &  LDPTRAR,IWK(PTRIST),id%PTLUST_S(1),id%PTRFAC(1),IWK(PTRWB),IWK8,
+     &LDPTRAR,id%PTR8ARR(1),id%NINCOLARR(1),id%NINROWARR(1),id%PTRDEBARR
+     &  (1), IWK(PTRIST),id%PTLUST_S(1),id%PTRFAC(1),IWK(PTRWB),IWK8,
      &  IWK(ITLOC),RHS_MUMPS(1),IWK(IPOOL),LPOOL,CNTL1,ICNTL(1),
      &  id%INFO(1), RINFO(1),KEEP(1),id%KEEP8(1),id%PROCNODE_STEPS(1),
      &  id%NSLAVES,id%COMM_NODES,id%MYID,id%MYID_NODES,BUFR,CMUMPS_LBUFR
-     &  , CMUMPS_LBUFR_BYTES, CMUMPS_LBUF, id%INTARR(1),id%DBLARR(1),
+     &  , CMUMPS_LBUFR_BYTES, CMUMPS_LBUF, INTARR(1), DBLARR(1),
      &  id%root, NELT_arg, id%FRTPTR(1), id%FRTELT(1),id%COMM_LOAD,
      &  id%ASS_IRECV, SEUIL, SEUIL_LDLT_NIV2, id%MEM_DIST(0),
-     &  id%DKEEP(1), id%PIVNUL_LIST(1), LPN_LIST, id%LRGROUPS(1)
+     &  id%DKEEP(1), PIVNUL_LIST_STRUCT, id%LRGROUPS(1)
+     &  ,id%IPOOL_B_L0_OMP(1),id%LPOOL_B_L0_OMP,
+     &  id%IPOOL_A_L0_OMP(1),id%LPOOL_A_L0_OMP,id%L_VIRT_L0_OMP,
+     &  id%VIRT_L0_OMP(1), id%VIRT_L0_OMP_MAPPING(1),id%L_PHYS_L0_OMP,
+     &  id%PHYS_L0_OMP(1), id%PERM_L0_OMP(1), id%PTR_LEAFS_L0_OMP(1),
+     &  id%L0_OMP_MAPPING(1),id%LL0_OMP_MAPPING,
+     &  id%THREAD_LA, id%L0_OMP_FACTORS(1), id%LL0_OMP_FACTORS,
+     &  id%I4_L0_OMP(1,1), size(id%I4_L0_OMP,1), size(id%I4_L0_OMP,2),
+     &  id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1), size(id%I8_L0_OMP,2)
      &     )
         id%IS => S_IS_POINTERS%IW; NULLIFY(S_IS_POINTERS%IW)
         id%S  => S_IS_POINTERS%A ; NULLIFY(S_IS_POINTERS%A)
@@ -2511,46 +2990,46 @@ C     Free some workspace corresponding
 C     to the original matrix in
 C     arrowhead or elemental format.
 C                  -----
-C     Note : INTARR was not allocated
-C     during factorization in the case
-C     of an assembled matrix.
+C     Note : DBLARR may be a pointer
+C     in case of element-entry.
 C     ---------------------------------
-        IF ( KEEP(55) .eq. 0 ) THEN
+      IF (allocated( INTARR )) DEALLOCATE( INTARR )
+      IF ( KEEP(55) .eq. 0 ) THEN
+C       ----------------
+C       Assembled matrix
+C       ----------------
+        IF (associated( DBLARR )) THEN
+          DEALLOCATE( DBLARR )
+          NULLIFY   ( DBLARR )
+        ENDIF
 C
-C         ----------------
-C         Assembled matrix
-C         ----------------
-          IF (associated( id%DBLARR)) THEN
-            DEALLOCATE(id%DBLARR)
-            NULLIFY(id%DBLARR)
-          ENDIF
-C
-        ELSE
-C
-C         ----------------
-C         Elemental matrix
-C         ----------------
-          IF (associated(id%INTARR)) THEN
-            DEALLOCATE( id%INTARR)
-            NULLIFY( id%INTARR )
-          ENDIF
-C         ------------------------------------
-C         For the master from an hybrid host
-C         execution without scaling, then real
-C         values have not been copied !
-C         -------------------------------------
-          IF (      id%MYID_NODES .eq. MASTER
+      ELSE
+C       ----------------
+C       Elemental matrix
+C       ----------------
+C       For the master from an hybrid host
+C       execution without scaling, then scalar
+C       values were not copied !
+        IF (      id%MYID_NODES .eq. MASTER
      &      .AND.   KEEP(46)   .eq. 1
      &      .AND.   KEEP(52)   .eq. 0 ) THEN
-            NULLIFY( id%DBLARR )
-          ELSE
-            IF (associated( id%DBLARR)) THEN
-              DEALLOCATE(id%DBLARR)
-              NULLIFY(id%DBLARR)
+            NULLIFY( DBLARR )
+        ELSE
+            IF (associated( DBLARR )) THEN
+              DEALLOCATE( DBLARR )
+              NULLIFY   ( DBLARR )
             ENDIF
-          END IF
         END IF
-C     Memroy statistics
+      END IF
+C     We also free RG2L now
+      IF ( KEEP(38) .NE. 0) THEN
+        IF (associated(id%root%RG2L)) THEN
+          DEALLOCATE(id%root%RG2L)
+          NULLIFY(id%root%RG2L)
+        ENDIF
+      ENDIF
+C
+C     Memory statistics
 C     -----------------------------------
 C     If QR (Keep(19)) is not zero, and if
 C     the host does not have the information
@@ -2558,6 +3037,7 @@ C     (ie is not slave), send information
 C     computed on the slaves during facto
 C     to the host.
 C     -----------------------------------
+C     Note the KEEP(17), KEEP(143) have been bcasted during fac_par_m
       IF ( KEEP(19) .NE. 0 ) THEN
         IF ( KEEP(46) .NE. 1 ) THEN
 C         Host was not working during facto_root
@@ -2565,8 +3045,12 @@ C         Send him the information
           IF ( id%MYID .eq. MASTER ) THEN
             CALL MPI_RECV( KEEP(17), 1, MPI_INTEGER, 1, DEFIC_TAG,
      &                   id%COMM, STATUS, IERR )
+            CALL MPI_RECV( KEEP(143), 1, MPI_INTEGER, 1, DEFIC_TAG,
+     &                   id%COMM, STATUS, IERR )
           ELSE IF ( id%MYID .EQ. 1 ) THEN
             CALL MPI_SEND( KEEP(17), 1, MPI_INTEGER, 0, DEFIC_TAG,
+     &                   id%COMM, IERR )
+            CALL MPI_SEND( KEEP(143), 1, MPI_INTEGER, 0, DEFIC_TAG,
      &                   id%COMM, IERR )
           END IF
         END IF
@@ -2579,7 +3063,7 @@ C     --------------------------------
       IF (allocated(BUFR)) DEALLOCATE(BUFR)
       CALL CMUMPS_BUF_DEALL_SMALL_BUF( IERR )
 C//PIV
-      IF (KEEP(219).NE.0) THEN
+      IF ((KEEP(50).EQ.2).AND.(KEEP(219).NE.0)) THEN
       CALL CMUMPS_BUF_DEALL_MAX_ARRAY()
       ENDIF
 C
@@ -2591,6 +3075,10 @@ C     not be necessary.
      &                    id%COMM, id%MYID )
 C
       CALL CMUMPS_EXTRACT_SCHUR_REDRHS(id)
+C     return to user singular values
+      IF (id%KEEP(19) .NE.0) THEN
+       CALL CMUMPS_EXTRACT_SINGULAR_VALUES(id)
+      ENDIF
       IF (KEEP(201) .GT. 0) THEN
          IF ((KEEP(201).EQ.1) .OR. (KEEP(201).EQ.2)) THEN
             IF ( I_AM_SLAVE ) THEN
@@ -2611,7 +3099,16 @@ CC            IF ( id%INFO(1) < 0 ) GOTO 500
       IF (id%MYID.EQ.MASTER) THEN
         CALL MUMPS_SECFIN(TIME)
         id%DKEEP(94)=real(TIME)
+        IF (KEEP(400).GT.0) THEN
+C         Facto time above L0_OMP = total time - facto time under L0_OMP
+          id%DKEEP(96)=id%DKEEP(94)-id%DKEEP(95)
+        ENDIF
       ENDIF
+C     Time to process root node:
+      CALL MPI_REDUCE( id%DKEEP(99), TMPTIME, 1,
+     &                 MPI_REAL,
+     &                 MPI_MAX, MASTER, id%COMM, IERR )
+      id%DKEEP(99)=TMPTIME
 C     =====================================================================
 C     COMPUTE MEMORY ALLOCATED BY MUMPS, INFO(16)
 C     ---------------------------------------------
@@ -2623,7 +3120,23 @@ C     ---------------------------------------------
      &     BLR_STRAT, .TRUE., TOTAL_BYTES,
      &     IDUMMY, BDUMMY, MEM_EFF_ALLOCATED
      &     , .FALSE.   ! UNDER_L0_OMP
+     &    , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &     size(id%I8_L0_OMP,2)
      &     )
+      IF (KEEP(400) .GT. 0 ) THEN ! L0 activated
+        CALL CMUMPS_MAX_MEM( id%KEEP(1),id%KEEP8(1),
+     &     id%MYID, N, id%NELT, id%NA(1), id%LNA, id%KEEP8(28),
+     &     id%KEEP8(30),
+     &     id%NSLAVES, TOTAL_MBYTES_UNDER_L0, .TRUE., id%KEEP(201),
+     &     BLR_STRAT, .TRUE., TOTAL_BYTES_UNDER_L0,
+     &     IDUMMY, BDUMMY, MEM_EFF_ALLOCATED
+     &     , .TRUE.   ! UNDER_L0_OMP
+     &     , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &       size(id%I8_L0_OMP,2)
+     &        )
+        TOTAL_MBYTES = max (TOTAL_MBYTES,TOTAL_MBYTES_UNDER_L0) 
+        TOTAL_BYTES  = max (TOTAL_BYTES, TOTAL_BYTES_UNDER_L0)
+      ENDIF
        IF (id%KEEP8(24).NE.0) THEN
 C         WK_USER is not part of memory allocated by MUMPS
 C         and is not counted, id%KEEP8(23) should be zero
@@ -2647,7 +3160,7 @@ C       ----------------------------------------------------
      &       MP, MPG, id%INFO(16), id%INFOG(18), id%INFOG(19),
      &       id%NSLAVES, IRANK,
      &       id%KEEP(1) )
-C FIXME Check if WK_USER used and indicate, total space to WK_USER
+C     If WK_USER is provided, this excludes WK_USER
       IF (PROK ) THEN
           WRITE(MP,'(A,I12) ')
      & ' ** Eff. min. Space MBYTES for facto             (INFO(16)):',
@@ -2666,7 +3179,23 @@ C     ---------------------------------------
      &     BLR_STRAT, PERLU_ON, TOTAL_BYTES,
      &     IDUMMY, BDUMMY, MEM_EFF_ALLOCATED
      &     , .FALSE.   ! UNDER_L0_OMP
+     &     , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &       size(id%I8_L0_OMP,2)
      &     )
+      IF (KEEP(400) .GT. 0 ) THEN ! L0 activated
+        CALL CMUMPS_MAX_MEM( id%KEEP(1),id%KEEP8(1),
+     &    id%MYID, N, id%NELT, id%NA(1), id%LNA, id%KEEP8(28),
+     &    id%KEEP8(30),
+     &    id%NSLAVES, TOTAL_MBYTES_UNDER_L0, .TRUE., id%KEEP(201),
+     &    BLR_STRAT, PERLU_ON, TOTAL_BYTES_UNDER_L0,
+     &    IDUMMY, BDUMMY, MEM_EFF_ALLOCATED
+     &    , .TRUE. ! UNDER_L0_OMP
+     &    , id%I8_L0_OMP(1,1), size(id%I8_L0_OMP,1),
+     &      size(id%I8_L0_OMP,2)
+     &  )
+        TOTAL_MBYTES = max (TOTAL_MBYTES,TOTAL_MBYTES_UNDER_L0) 
+        TOTAL_BYTES  = max (TOTAL_BYTES, TOTAL_BYTES_UNDER_L0)
+      ENDIF
 C     -- TOTAL_BYTES and TOTAL_MBYTES includes both static 
 C     -- (MAXS) and BLR structures computed as the SUM of the PEAKS 
 C     -- (KEEP8(67) + KEEP8(70))
@@ -2693,6 +3222,17 @@ C     ----------------------------------------------------
      &  ' ** Memory effectively used, total in Mbytes    (INFOG(22)):',
      &  id%INFOG(22)
       END IF
+      SUM_INFO22_THIS_NODE=0
+      CALL MPI_REDUCE( id%INFO(22), SUM_INFO22_THIS_NODE, 1,
+     &                 MPI_INTEGER,
+     &                 MPI_SUM, 0, id%KEEP(411), IERR )
+      CALL MPI_REDUCE( SUM_INFO22_THIS_NODE, MAX_SUM_INFO22_THIS_NODE,
+     &                 1, MPI_INTEGER, MPI_MAX, 0, id%COMM, IERR )
+      IF (PROKG .AND. PRINT_NODEINFO) THEN
+        WRITE(MPG,'(A,I12)')
+     &  ' ** Max. effective space per compute node, in MBytes       :',
+     &  MAX_SUM_INFO22_THIS_NODE
+      ENDIF
 C
       IF (I_AM_SLAVE) THEN
        K67 = id%KEEP8(67)
@@ -2712,7 +3252,48 @@ C        in main working array S
       CALL MUMPS_SETI8TOI4(K67,id%INFO(21))
 C
 C
+      IF (KEEP(400) .GT.0 ) THEN
+        IF (.NOT. I_AM_SLAVE) THEN
+          id%DKEEP(95) = 0.0E0
+          id%DKEEP(16) = 0.0E0
+        ENDIF
+        IF (id%NPROCS .GT. 1) THEN
+C         Compute average and max (across MPI's)
+          CALL MPI_REDUCE(id%DKEEP(95), TMPTIME, 1,
+     &    MPI_REAL, MPI_SUM, MASTER, id%COMM, IERR)
+          IF (id%MYID.EQ.MASTER) TIMEAVG=dble(TMPTIME)
+          CALL MPI_REDUCE(id%DKEEP(16), TMPFLOP, 1,
+     &    MPI_REAL, MPI_SUM, MASTER, id%COMM, IERR)
+          IF (id%MYID.EQ.MASTER) FLOPAVG=dble(TMPFLOP)
+          IF (id%MYID.EQ.MASTER) THEN
+            TIMEAVG = TIMEAVG / id%NSLAVES
+            FLOPAVG = FLOPAVG / id%NSLAVES
+          ENDIF
+          CALL MPI_REDUCE(id%DKEEP(95), TMPTIME, 1, 
+     &    MPI_REAL, MPI_MAX, MASTER, id%COMM, IERR)
+          IF (id%MYID.EQ.MASTER) TIMEMAX=dble(TMPTIME)
+          CALL MPI_REDUCE(id%DKEEP(16), TMPFLOP, 1, 
+     &    MPI_REAL, MPI_MAX, MASTER, id%COMM, IERR)
+          IF (id%MYID.EQ.MASTER) FLOPMAX=dble(TMPFLOP)
+C         (PROKG may only be true on master)
+          IF ( PROKG ) THEN
+            WRITE(MPG,190) FLOPAVG, FLOPMAX
+            WRITE(MPG,188) TIMEAVG, TIMEMAX
+          ENDIF
+        ELSE
+C          Print DKEEP(95) directly without reduction
+           IF ( PROKG ) THEN
+             WRITE(MPG,189) id%DKEEP(16)
+             WRITE(MPG,187) id%DKEEP(95)
+           ENDIF
+        ENDIF
+      ENDIF
       IF ( PROKG ) THEN
+          IF ( ( KEEP(38).NE.0 .OR. KEEP(20).NE.0 ) .AND.
+     &        KEEP(60) .EQ. 0 ) THEN
+            WRITE(MPG,186) id%DKEEP(99)
+          ENDIF
+C         Elapsed time for factorization:
           IF (id%INFO(1) .GE.0) THEN
             WRITE(MPG,180) id%DKEEP(94)
           ELSE
@@ -2772,6 +3353,8 @@ C     for solve phase
 C     (Note that INFO(11) includes root size on root master)
       KEEP(133) = INFOG(11)
       CALL MPI_REDUCE( id%INFO(12), INFOG(12), 3, MPI_INTEGER,
+     &                 MPI_SUM, MASTER, id%COMM, IERR)
+      CALL MPI_REDUCE( id%INFO(40), INFOG(50), 1, MPI_INTEGER,
      &                 MPI_SUM, MASTER, id%COMM, IERR)
       CALL MPI_REDUCE( KEEP(103), INFOG(25), 1, MPI_INTEGER,
      &                 MPI_SUM, MASTER, id%COMM, IERR)
@@ -2872,12 +3455,6 @@ C
             CALL MPI_REDUCE( FLOP_FACTO_FR, TMP_FLOP_FACTO_FR
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE( FLOP_SOLFWD_FR, TMP_FLOP_SOLFWD_FR
-     &                      , 1, MPI_DOUBLE_PRECISION,
-     &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE( FLOP_SOLFWD_LR, TMP_FLOP_SOLFWD_LR
-     &                      , 1, MPI_DOUBLE_PRECISION,
-     &                       MPI_SUM, MASTER, id%COMM, IERR)
             CALL MPI_REDUCE( CNT_NODES,TMP_CNT_NODES
      &                      , 1, MPI_INTEGER,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
@@ -2938,19 +3515,25 @@ C
             CALL MPI_REDUCE( TIME_DECOMP_UCFS, TMP_TIME_DECOMP_UCFS
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE( TIME_DECOMP_ASM1, TMP_TIME_DECOMP_ASM1
+            CALL MPI_REDUCE( TIME_LRASM_NIV1, TMP_TIME_LRASM_NIV1
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE(TIME_DECOMP_LOCASM2, TMP_TIME_DECOMP_LOCASM2
+            CALL MPI_REDUCE(TIME_LRASM_LOCASM2, TMP_TIME_LRASM_LOCASM2
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE(TIME_DECOMP_MAPLIG1, TMP_TIME_DECOMP_MAPLIG1
+            CALL MPI_REDUCE(TIME_LRASM_MAPLIG1, TMP_TIME_LRASM_MAPLIG1
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE( TIME_DECOMP_ASMS2S, TMP_TIME_DECOMP_ASMS2S
+            CALL MPI_REDUCE(TIME_LRASM_CONTRIB2, TMP_TIME_LRASM_CONTRIB2
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
-            CALL MPI_REDUCE( TIME_DECOMP_ASMS2M, TMP_TIME_DECOMP_ASMS2M
+            CALL MPI_REDUCE(TIME_FRASM_LOCASM2, TMP_TIME_FRASM_LOCASM2
+     &                      , 1, MPI_DOUBLE_PRECISION,
+     &                       MPI_SUM, MASTER, id%COMM, IERR)
+            CALL MPI_REDUCE(TIME_FRASM_MAPLIG1, TMP_TIME_FRASM_MAPLIG1
+     &                      , 1, MPI_DOUBLE_PRECISION,
+     &                       MPI_SUM, MASTER, id%COMM, IERR)
+            CALL MPI_REDUCE(TIME_FRASM_CONTRIB2, TMP_TIME_FRASM_CONTRIB2
      &                      , 1, MPI_DOUBLE_PRECISION,
      &                       MPI_SUM, MASTER, id%COMM, IERR)
             CALL MPI_REDUCE( TIME_PANEL, TMP_TIME_PANEL
@@ -3001,8 +3584,6 @@ C number of procs
             FLOP_DECOMPRESS      = TMP_FLOP_DECOMPRESS
             FLOP_CB_DECOMPRESS   = TMP_FLOP_CB_DECOMPRESS
             FLOP_FRFRONTS        = TMP_FLOP_FRFRONTS
-            FLOP_SOLFWD_FR       = TMP_FLOP_SOLFWD_FR
-            FLOP_SOLFWD_LR       = TMP_FLOP_SOLFWD_LR
             FLOP_FACTO_FR        = TMP_FLOP_FACTO_FR
             CNT_NODES            = TMP_CNT_NODES
             TIME_UPDATE          = TMP_TIME_UPDATE         /id%NPROCS
@@ -3026,11 +3607,13 @@ C number of procs
             TIME_LR_MODULE       = TMP_TIME_LR_MODULE      /id%NPROCS
             TIME_DECOMP          = TMP_TIME_DECOMP         /id%NPROCS
             TIME_DECOMP_UCFS     = TMP_TIME_DECOMP_UCFS    /id%NPROCS
-            TIME_DECOMP_ASM1     = TMP_TIME_DECOMP_ASM1    /id%NPROCS
-            TIME_DECOMP_LOCASM2  = TMP_TIME_DECOMP_LOCASM2 /id%NPROCS
-            TIME_DECOMP_MAPLIG1  = TMP_TIME_DECOMP_MAPLIG1 /id%NPROCS
-            TIME_DECOMP_ASMS2S   = TMP_TIME_DECOMP_ASMS2S  /id%NPROCS
-            TIME_DECOMP_ASMS2M   = TMP_TIME_DECOMP_ASMS2M  /id%NPROCS
+            TIME_LRASM_NIV1      = TMP_TIME_LRASM_NIV1     /id%NPROCS
+            TIME_LRASM_LOCASM2   = TMP_TIME_LRASM_LOCASM2  /id%NPROCS
+            TIME_LRASM_MAPLIG1   = TMP_TIME_LRASM_MAPLIG1  /id%NPROCS
+            TIME_LRASM_CONTRIB2  = TMP_TIME_LRASM_CONTRIB2 /id%NPROCS
+            TIME_FRASM_LOCASM2   = TMP_TIME_FRASM_LOCASM2  /id%NPROCS
+            TIME_FRASM_MAPLIG1   = TMP_TIME_FRASM_MAPLIG1  /id%NPROCS
+            TIME_FRASM_CONTRIB2  = TMP_TIME_FRASM_CONTRIB2 /id%NPROCS
          ENDIF
          CALL COMPUTE_GLOBAL_GAINS(id%KEEP8(110),id%RINFOG(3),
      &        id%KEEP8(49), PROKG, MPG)
@@ -3056,8 +3639,10 @@ C            non recommended setting.
           CALL SAVEandWRITE_GAINS(FRONTWISE,
      &                KEEP(489), id%DKEEP, N,  id%ICNTL(36),
      &                KEEP(487), KEEP(488), KEEP(490),
-     &                KEEP(491), KEEP(50), KEEP(486), KEEP(472),
-     &                KEEP(475), KEEP(478), KEEP(480), KEEP(481), 
+     &                KEEP(491), KEEP(50), KEEP(486), 
+     &                KEEP(249)*max(KEEP(381), 1),
+     &                KEEP(472), KEEP(475), KEEP(478), 
+     &                KEEP(480), KEEP(481),
      &                KEEP(483), KEEP(484), 
      &                id%KEEP8(110), id%KEEP8(49),
      &                KEEP(28), id%NPROCS, MPG, PROKG)
@@ -3066,6 +3651,9 @@ C           flops when BLR activated
           ELSE
             RINFOG(14) = 0.0E00
           ENDIF
+        IF (id%MYID .eq. MASTER) THEN
+          KEEP(399) = KEEP399_SAVE
+        ENDIF
       ENDIF
 C     ==============================
 C     NULL PIVOTS AND RANK-REVEALING
@@ -3081,9 +3669,73 @@ C        -- with ICNTL(24) = 1.
          KEEP(109) = 0
          KEEP(112) = 0
       ENDIF
+      IF ( associated( id%PIVNUL_LIST) ) THEN
+        DEALLOCATE(id%PIVNUL_LIST)
+        NULLIFY(id%PIVNUL_LIST)
+      ENDIF
+C     set INFOG(28) even in case of error 
       IF (id%MYID.EQ.MASTER) THEN
-C      INFOG(28) deficiency resulting from ICNTL(24) and ICNTL(56).
-       INFOG(28)=KEEP(112)+KEEP(17)
+C       INFOG(28) deficiency resulting from ICNTL(24) and ICNTL(56)
+        INFOG(28)=KEEP(112)
+        IF (KEEP(17).GT.0) THEN
+          INFOG(28)=KEEP(112)+KEEP(17)
+        ENDIF
+      ENDIF
+C
+      IF (id%INFO(1).GE.0) THEN
+C{     PIVNUL_LIST not meaningful in case of error
+C      (do not allocate)
+       IF (id%MYID.EQ.MASTER) THEN
+        IF ( INFOG(28) .GT. 0 ) THEN
+          ALLOCATE(id%PIVNUL_LIST(INFOG(28)), stat=IERR)
+          IF ( IERR .GT. 0 ) THEN
+            id%INFO(1)=-13
+            id%INFO(2)=INFOG(28)
+          END IF
+        ENDIF
+       ELSE
+C       id%PIVNUL_LIST(1:KEEP(109)) used during sol_driver on slaves 
+C       to initialize id%RHSINTR
+        IF (KEEP(109).GT.0) THEN
+          ALLOCATE(id%PIVNUL_LIST(KEEP(109)), stat=IERR)
+          IF ( IERR .GT. 0 ) THEN
+           id%INFO(1)=-13
+           id%INFO(2)=INFOG(28)
+          END IF
+        ENDIF
+       ENDIF
+C}
+      ENDIF
+      CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
+     &                    id%COMM, id%MYID )
+      IF ( id%INFO(1).lt.0 ) GOTO 490
+      IF ( (KEEP(19).NE.0) .AND. (KEEP(143) .NE. KEEP(17)) ) THEN
+C
+C         Raise a warning (on all MPI processes) since determinant or
+C         inertia or null pivot list is not consistent with deficiency
+C         computed with ICNTL(46)=1.
+C
+        id%INFO(1) = id%INFO(1)+16
+        id%INFO(2) = KEEP(112)+KEEP(143)
+        IF (KEEP(118) .GE. 40) THEN
+          IF ( PROKG ) THEN
+            WRITE(MPG,'(/A,A/,A,A,I8/,A,A,I8/)')
+     &      " WARNING: in the context of rank-revealing,",
+     &      " the inertia, determinant and pivnul list",  
+     &      " are computed with RR (rank-revealing)-LU,", 
+     &      " but the deficiency found by RR-LU: ", 
+     &      id%INFO(2),
+     &      " is different from the deficiency computed",
+     &      " with ICNTL(56)>0: ",  KEEP(112)+KEEP(17)
+          ENDIF
+        ELSE
+          IF ( LP .GT. 0 ) THEN
+            WRITE(LP,'(/A,A/,A/)')
+     &      " ERROR : in the context of rank-revealing,",
+     &      " the inertia, determinant and pivnul list",  
+     &      " are not correct because RR LU not called "
+          ENDIF
+        ENDIF
       ENDIF
 C     ========================================
 C     We now provide to the host the part of
@@ -3092,6 +3744,12 @@ C     of the root node and we update id%INFO(18)
 C     on the processor holding the root to
 C     include null pivots relative to the root
 C     ========================================
+      IF ( KEEP(109).GT.0 ) THEN
+          DO I=1, KEEP(109) 
+            id%PIVNUL_LIST(I)= 
+     &             PIVNUL_LIST_STRUCT%PIVNUL_LIST(I)
+          ENDDO
+      ENDIF
       IF (KEEP(17) .NE. 0) THEN
         IF (id%MYID .EQ. ID_ROOT) THEN
 C         Include in id%INFO(18) null pivots resulting
@@ -3103,14 +3761,16 @@ C         the sum of all id%INFO(18) is equal to INFOG(28).
           IF (id%MYID.EQ.MASTER) THEN
 C           --------------------------------------------------
 C           Null pivots of root have been stored in
-C           PIVNUL_LIST(KEEP(109)+1:KEEP(109)+KEEP(17).
+C           PIVNUL_LIST_STRUCT%PIVNUL_LIST(
+C                         KEEP(109)+1:KEEP(109)+KEEP(17) )
 C           Shift them at the end of the list because:
 C           * this is what we need to build the null space
 C           * we would otherwise overwrite them on the host
 C             when gathering null pivots from other processors
 C           --------------------------------------------------
-            DO I=1, KEEP(17)
-              id%PIVNUL_LIST(KEEP(112)+I)=id%PIVNUL_LIST(KEEP(109)+I)
+            DO I= KEEP(17), 1, -1
+              id%PIVNUL_LIST(KEEP(112)+I)= 
+     &               PIVNUL_LIST_STRUCT%PIVNUL_LIST(KEEP(109)+I)
             ENDDO
           ENDIF
         ELSE
@@ -3120,13 +3780,14 @@ C         from the processor responsible of
 C         the root to the host (or MASTER).
 C         ---------------------------------
           IF (id%MYID .EQ. ID_ROOT) THEN
-            CALL MPI_SEND(id%PIVNUL_LIST(KEEP(109)+1), KEEP(17),
-     &                    MPI_INTEGER, MASTER, ZERO_PIV,
-     &                    id%COMM, IERR)
+            CALL MPI_SEND(
+     &               PIVNUL_LIST_STRUCT%PIVNUL_LIST(KEEP(109)+1), 
+     &               KEEP(17), MPI_INTEGER, MASTER, ZERO_PIV,
+     &               id%COMM, IERR)
           ELSE IF (id%MYID .EQ. MASTER) THEN
             CALL MPI_RECV(id%PIVNUL_LIST(KEEP(112)+1), KEEP(17),
-     &                    MPI_INTEGER, ID_ROOT, ZERO_PIV,
-     &                    id%COMM, STATUS, IERR )
+     &               MPI_INTEGER, ID_ROOT, ZERO_PIV,
+     &               id%COMM, STATUS, IERR )
           ENDIF
         ENDIF
       ENDIF
@@ -3155,7 +3816,8 @@ C           First null pivot of master is in
 C           position 1 of global list
             KEEP(220)=1
             DO I = 1,id%NPROCS-1
-               CALL MPI_RECV(id%PIVNUL_LIST(POSBUF), ITMP2(I+1), 
+              IF (ITMP2(I+1).GT.0) THEN
+                CALL MPI_RECV(id%PIVNUL_LIST(POSBUF), ITMP2(I+1), 
      &              MPI_INTEGER,I, 
      &              ZERO_PIV, id%COMM, STATUS, IERR)
 C              Send position POSBUF of first null pivot of proc I
@@ -3165,39 +3827,23 @@ C              K, 0 <= K <= INFOG(28).
                CALL MPI_SEND(POSBUF, 1, MPI_INTEGER, I, ZERO_PIV,
      &              id%COMM, IERR)
                POSBUF = POSBUF + ITMP2(I+1)
+              ENDIF
             ENDDO
          ELSE
-            CALL MPI_SEND( id%PIVNUL_LIST(1), KEEP(109), MPI_INTEGER,
+           IF (KEEP(109).GT.0) THEN
+            CALL MPI_SEND( 
+     &           PIVNUL_LIST_STRUCT%PIVNUL_LIST(1), KEEP(109), 
+     &           MPI_INTEGER,
      &           MASTER,ZERO_PIV, id%COMM, IERR)
             CALL MPI_RECV( KEEP(220), 1, MPI_INTEGER, MASTER, ZERO_PIV,
      &           id%COMM, STATUS, IERR )
+           ENDIF
          ENDIF
       ENDIF
-C     =====================================
-C     Statistics relative to min/max pivots
-C     =====================================
-      CALL MPI_REDUCE( id%DKEEP(19), RINFOG(19), 1, 
-     &                 MPI_REAL,
-     &                 MPI_MIN, MASTER, id%COMM, IERR )
-      CALL MPI_REDUCE( id%DKEEP(20), RINFOG(20), 1, 
-     &                 MPI_REAL,
-     &                 MPI_MIN, MASTER, id%COMM, IERR )
-      CALL MPI_REDUCE( id%DKEEP(21), RINFOG(21), 1, 
-     &                 MPI_REAL,
-     &                 MPI_MAX, MASTER, id%COMM, IERR )
-C     =========================================
-C     Centralized number of swaps for pivoting
-C     =========================================
-      CALL MPI_REDUCE( id%KEEP8(80), ITEMP8, 1, MPI_INTEGER8,
-     &                 MPI_SUM, MASTER, id%COMM, IERR )
-      IF (id%MYID .EQ. MASTER) THEN
-        CALL MUMPS_SETI8TOI4(ITEMP8,id%INFOG(48))
+      IF (associated( PIVNUL_LIST_STRUCT%PIVNUL_LIST)) THEN
+        DEALLOCATE(PIVNUL_LIST_STRUCT%PIVNUL_LIST)
+        NULLIFY(PIVNUL_LIST_STRUCT%PIVNUL_LIST)
       ENDIF
-C     ==========================================
-C     Centralized largest increase of panel size
-C     ==========================================
-      CALL MPI_REDUCE( id%KEEP(425), id%INFOG(49), 1, MPI_INTEGER,
-     &                 MPI_MAX, MASTER, id%COMM, IERR )
 C     =====================================
 C     Statistics concerning the determinant
 C     =====================================
@@ -3211,15 +3857,16 @@ C     taken into account before the factorization, we multiply
 C     the determinant on the host by the scaling values corresponding
 C     to pivots in PIVNUL_LIST.
       IF (id%MYID.EQ.MASTER .AND. LSCAL. AND. KEEP(258).NE.0) THEN
-        DO I = 1, id%INFOG(28)
-          CALL CMUMPS_UPDATEDETER(
-     &         cmplx(id%ROWSCA(id%PIVNUL_LIST(I)),0.0E0,
-     &               kind=kind(0.0E0)),
-     &         id%DKEEP(6), KEEP(259))
-          CALL CMUMPS_UPDATEDETER(
-     &         cmplx(id%COLSCA(id%PIVNUL_LIST(I)),0.0E0,
-     &               kind=kind(0.0E0)),
-     &         id%DKEEP(6), KEEP(259))
+        K = min(KEEP(143), KEEP(17))
+        K = max(K, 0)
+        DO I = 1, KEEP(112)+ K
+c       DO I = 1, id%INFOG(28)  ! all null pivots + singular values
+          CALL CMUMPS_UPDATEDETER_SCALING(
+     &                            id%ROWSCA(id%PIVNUL_LIST(I)),
+     &                            id%DKEEP(6), KEEP(259))
+          CALL CMUMPS_UPDATEDETER_SCALING(
+     &                            id%COLSCA(id%PIVNUL_LIST(I)),
+     &                            id%DKEEP(6), KEEP(259))
         ENDDO
       ENDIF
 C
@@ -3247,9 +3894,6 @@ C         of max-weighted matching)
           IF (id%KEEP(23).NE.0) THEN
             CALL CMUMPS_DETER_SIGN_PERM(
      &           RINFOG(12), id%N,
-C           id%STEP: used as workspace of size N still
-C                    allocated on master; restored on exit
-     &           id%STEP(1),
      &           id%UNS_PERM(1) )
 C           Remark that RINFOG(12/13) are modified only
 C           on the host but will be broadcast on exit
@@ -3258,8 +3902,34 @@ C           from MUMPS (see CMUMPS_DRIVER)
         ENDIF
       ENDIF
  490  IF (allocated(ITMP2)) DEALLOCATE(ITMP2)
+C
+C     =====================================
+C     Statistics relative to min/max pivots
+C     =====================================
+      CALL MPI_REDUCE( id%DKEEP(19), RINFOG(19), 1, 
+     &                 MPI_REAL,
+     &                 MPI_MIN, MASTER, id%COMM, IERR )
+      CALL MPI_REDUCE( id%DKEEP(20), RINFOG(20), 1, 
+     &                 MPI_REAL,
+     &                 MPI_MIN, MASTER, id%COMM, IERR )
+      CALL MPI_REDUCE( id%DKEEP(21), RINFOG(21), 1, 
+     &                 MPI_REAL,
+     &                 MPI_MAX, MASTER, id%COMM, IERR )
+C     =========================================
+C     Centralized number of swaps for pivoting
+C     =========================================
+      CALL MPI_REDUCE( id%KEEP8(80), ITEMP8, 1, MPI_INTEGER8,
+     &                 MPI_SUM, MASTER, id%COMM, IERR )
+      IF (id%MYID .EQ. MASTER) THEN
+        CALL MUMPS_SETI8TOI4(ITEMP8,id%INFOG(48))
+      ENDIF
+C     ==========================================
+C     Centralized largest increase of panel size
+C     ==========================================
+      CALL MPI_REDUCE( id%KEEP(425), id%INFOG(49), 1, MPI_INTEGER,
+     &                 MPI_MAX, MASTER, id%COMM, IERR )
       IF ( PROKG ) THEN
-C     -----------------------------
+C{    -----------------------------
 C     PRINT STATISTICS  (on master)
 C     -----------------------------
           WRITE(MPG,99984) RINFOG(2),RINFOG(3),KEEP(52), 
@@ -3275,6 +3945,8 @@ C     -----------------------------
           END IF
           IF (KEEP(97) .NE. 0) THEN
             ! tiny pivots
+            WRITE(MPG, '(A,D16.4)') 
+     &     ' Effective static pivoting thresh., CNTL(4) =', SEUIL
             WRITE(MPG, 99986) INFOG(25)
           ENDIF
           IF (id%KEEP(50) == 2) THEN
@@ -3293,8 +3965,15 @@ c         IF ( KEEP(17) .ne. 0 )
      &    WRITE(MPG, 99983) KEEP(17)
           !Total deficiency
           IF (KEEP(110).NE.0.OR.KEEP(19).NE.0)
-c          IF (KEEP(110).NE.0.OR.KEEP(17).NE.0)
-     &    WRITE(MPG, 99992) KEEP(17)+KEEP(112)
+     &    WRITE(MPG, 99992) KEEP(17)+KEEP(112) ! = INFOG(28)
+          !Smallest pivot with also null pivots in abs value
+          WRITE(MPG, 99995) RINFOG(19)
+          !Smallest pivot in abs value
+          WRITE(MPG, 99993) RINFOG(20)
+          !Largest pivot in abs value
+          WRITE(MPG, 99994) RINFOG(21)
+          !value of ICNTL(12) that was effectively used.
+          WRITE(MPG, 99996) INFOG(24)
           ! Memory compress
           WRITE(MPG, 99981) INFOG(14)
           ! Extra copies due to ip stack in unsym case
@@ -3315,6 +3994,7 @@ c          IF (KEEP(110).NE.0.OR.KEEP(17).NE.0)
             WRITE(MPG,99979) RINFOG(13)
             WRITE(MPG,99977) INFOG(34)
           ENDIF
+C}
       END IF
 * ==========================================
 *
@@ -3335,18 +4015,19 @@ C  MUMPS_FMRD_INIT
 C  are all called.
 C
  500  CONTINUE
-C     Redo free DBLARR (as in end_driver.F)
-C     in case an error occurred after allocating
-C     DBLARR and before freeing it above.
-      IF (id%KEEP(46).EQ.1 .AND.
-     &    id%KEEP(55).NE.0 .AND.
-     &    id%MYID.EQ.MASTER .AND.
-     &    id%KEEP(52) .EQ. 0) THEN
-        NULLIFY(id%DBLARR)
-      ELSE
-        IF (associated(id%DBLARR)) THEN
-          DEALLOCATE(id%DBLARR)
-          NULLIFY(id%DBLARR)
+C     Redo free INTARR and DBLARR in case an error occurred
+C     after allocating them and before freeing them.
+      IF (associated(DBLARR)) THEN
+        DEALLOCATE(DBLARR)
+        NULLIFY(DBLARR)
+      ENDIF
+      IF (allocated(INTARR)) THEN
+        DEALLOCATE(INTARR)
+      ENDIF
+      IF ( KEEP(38) .NE. 0) THEN
+        IF (associated(id%root%RG2L)) THEN
+          DEALLOCATE(id%root%RG2L)
+          NULLIFY(id%root%RG2L)
         ENDIF
       ENDIF
 #if ! defined(NO_FDM_DESCBAND)
@@ -3372,7 +4053,7 @@ C         (requires successful factorization otherwise module is freed)
           CALL CMUMPS_BLR_MOD_TO_STRUC(id%BLRARRAY_ENCODING)
         ELSE
 C         INFO(1) positive or negative
-          CALL CMUMPS_BLR_END_MODULE(id%INFO(1), id%KEEP8)
+          CALL CMUMPS_BLR_END_MODULE(id%INFO(1), id%KEEP8, id%KEEP(34))
         ENDIF
       ENDIF
       IF (I_AM_SLAVE) THEN
@@ -3422,6 +4103,81 @@ C           ----------------------------------------
             IF (associated(id%S))  DEALLOCATE(id%S)
             NULLIFY(id%S)   ! in all cases
             id%KEEP8(23)=0_8
+         ELSE
+C
+C         Fwd in facto: free RHS_MUMPS in case
+C         it was allocated.
+          IF (RHS_MUMPS_ALLOCATED) DEALLOCATE(RHS_MUMPS)
+          NULLIFY(RHS_MUMPS)
+          RHS_MUMPS_ALLOCATED = .FALSE.
+          IF (.NOT.WK_USER_PROVIDED) THEN
+C{
+            IF (id%KEEP8(31).EQ.0) THEN
+C            No factors stored in id%S
+             IF (associated(id%S)) THEN
+               DEALLOCATE (id%S)
+               NULLIFY(id%S)
+               id%KEEP8(23) = 0
+             ENDIF
+            ELSE
+C{            Factors stored in id%S
+               TMPpeak = id%KEEP8(73) + id%KEEP8(31) -
+     &           (CMUMPS_LBUFR_BYTES+CMUMPS_LBUF)/int(KEEP(35),8)
+               Compact_S_Authorized = .FALSE.
+C              Set Compact_S_Authorized 
+               IF (id%KEEP8(4).GT.0_8) THEN
+                 IF (TMPpeak.LT.id%KEEP8(75)) 
+     &               Compact_S_Authorized=.TRUE.
+               ELSE
+                 Compact_S_Authorized = .TRUE.
+               ENDIF
+              IF (ICNTL49_LOC.EQ.1.AND..NOT.Compact_S_Authorized) THEN
+                  IF (PROK) THEN
+                   WRITE(MP,'(A,I4,A,I3,A,/A,I8)') 
+     &              " ** WARNING ** on MPI proc= ", id%MYID, 
+     &              " ICNTL(49)= ", ICNTL49_LOC, 
+     &              ", but not enough memory to compact id%S due to ",
+     &              "    memory limitation given by ICNTL(23)=",
+     &              ICNTL(23)
+                  ENDIF
+              ELSE IF (
+     &           (ICNTL49_LOC.EQ.1.AND.Compact_S_Authorized) 
+     &            .OR.
+     &           (ICNTL49_LOC.EQ.2) 
+     &           ) THEN
+C{             Try to compact id%S of size MAXS
+                 ALLOCATE(S_IS_POINTERS%A(id%KEEP8(31)), stat=IERR)
+                 IF (IERR .GT. 0 ) THEN
+                  IF (PROK) THEN
+                   WRITE(MP,'(A,I4,A,I3,A)') 
+     &              " ** WARNING ** on MPI proc= ", id%MYID, 
+     &              " ICNTL(49)= ", ICNTL49_LOC, 
+     &              ", but not enough memory to compact id%S "
+                  ENDIF
+                   id%INFO(1) = id%INFO(1) + 4
+                   GOTO 513
+                 ENDIF
+C
+!$      NOMP = OMP_GET_MAX_THREADS()
+!$      CHUNK8=int(KEEP(361),8)
+!$OMP   PARALLEL DO PRIVATE(I8) SCHEDULE(STATIC, CHUNK8)
+!$OMP&  IF ( id%KEEP8(31) > int(KEEP(361),8) .AND. NOMP .GT. 1)
+#if defined(__ve__)
+!NEC$ IVDEP
+#endif
+                 DO I8=1_8, id%KEEP8(31)
+                   S_IS_POINTERS%A(I8) = id%S(I8)
+                 ENDDO
+!$OMP   END PARALLEL DO
+                 DEALLOCATE (id%S)
+                 id%S  => S_IS_POINTERS%A;  NULLIFY(S_IS_POINTERS%A)
+                 id%KEEP8(23) = id%KEEP8(31)
+C}
+              ENDIF
+C}
+            ENDIF
+C}
+          ENDIF
          ENDIF
       ELSE  ! host not working
          IF (WK_USER_PROVIDED) THEN
@@ -3435,7 +4191,7 @@ C     at the end of a phase S is always freed when WK_USER provided
       END IF
 C
 C     Goto 513 is done in case of error where LOAD_INIT was
-C     called but not OOC_INIT_FACTO.
+C     called but not the scaling nor OOC_INIT_FACTO.
  513  CONTINUE
       IF ( I_AM_SLAVE ) THEN
          CALL CMUMPS_LOAD_END( id%INFO(1), id%NSLAVES, IERR )
@@ -3444,10 +4200,42 @@ C     called but not OOC_INIT_FACTO.
       CALL MUMPS_PROPINFO( ICNTL(1), id%INFO(1),
      &     id%COMM, id%MYID )
 C
-C     Goto 517 is done when an error occurs when GPU initialization
-C     has been performed but not LOAD_INIT or OOC_INIT_FACTO
+C     Goto 516 is done in case of error when GPU initialiwqtion
+C     has been performed and scaling was optionally computed but
+C     not LOAD_INIT nor OOC_INIT_FACTO. We can then extract
+C     scaling arrays in case of error.
+ 516  CONTINUE
+C     --------------------------------------------
+C     We now build id%ROWSCA_loc and id%COLSCA_loc
+C     in case of successful factorization, in the
+C     numbering associated to the fully summed
+C     variables of the frontal matrices.
+C     This requires the factorization to be
+C     successful because otherwise we do not have
+C     the final lists of pivots associated to
+C     the fronts, including delayed pivots and
+C     symmetric/unsymmetric permutations done
+C     during the factorization process.
+C     --------------------------------------------
+      IF (LSCAL .AND. id%INFO(1).GE.0) THEN
+        CALL CMUMPS_EXTRACT_SCALING(id)
+C       occurs during scaling extraction, keep the error.
+        IF ( id%INFO(1) .LT. 0 ) THEN
+          IF (LPOK) THEN
+            WRITE(LP,*) "Facto OK but error during EXTRACT_SCALING",
+     &      id%INFO(1:2)
+          ENDIF
+        ENDIF
+      ENDIF
 C
+C     Goto 517 is done when an error occurs when GPU initialization
+C     has been performed but not LOAD_INIT or OOC_INIT_FACTO, e.g.
+C     when an error occurred during the scaling.
  517  CONTINUE
+      IF (associated( PIVNUL_LIST_STRUCT%PIVNUL_LIST)) THEN
+        DEALLOCATE(PIVNUL_LIST_STRUCT%PIVNUL_LIST)
+        NULLIFY(PIVNUL_LIST_STRUCT%PIVNUL_LIST)
+      ENDIF
 C
 C     Goto 530 is done when an error occurs before
 C     the calls to GPU_INIT, LOAD_INIT and OOC_INIT_FACTO
@@ -3456,16 +4244,19 @@ C  Fwd in facto: free RHS_MUMPS in case
 C  it was allocated.
       IF (RHS_MUMPS_ALLOCATED) DEALLOCATE(RHS_MUMPS)
       NULLIFY(RHS_MUMPS)
+      RHS_MUMPS_ALLOCATED = .FALSE.
 C
       id%KEEP8(26) = KEEP826_SAVE
       RETURN
  120  FORMAT(/' Local redistrib: data local/sent           =',I16,I16)
  125  FORMAT(/' Redistrib: total data local/sent           =',I16,I16)
  130  FORMAT(//'****** FACTORIZATION STEP ********'/)
+ 140  FORMAT(/' Statistics on the scaling phase'
+     & /' Elapsed time for scaling                   =',F12.4)
  160  FORMAT(
-     & /' Elapsed time to reformat/distribute matrix =',F12.4)
+     & ' Elapsed time to reformat/distribute matrix =',F12.4/)
  166  FORMAT(' Max difference from 1 after scaling the entries',
-     &       ' for ONE-NORM (option 7/8)   =',D9.2)
+     &       ' for ONE-NORM (option 7/8)   =',D9.2/)
  170  FORMAT(' STATISTICS PRIOR NUMERICAL FACTORIZATION ...'/
      &        ' Size of internal working array S           =',I16/
      &        ' Size of internal working array IS          =',I16/
@@ -3480,39 +4271,80 @@ C
      &        ' Number of working processes                =',I16/
      &        ' ICNTL(22) Out-of-core option               =',I16/
      &        ' ICNTL(35) BLR activation (eff. choice)     =',I16/
+     &        ' ICNTL(37) BLR CB compression (eff. choice) =',I16/
+     &        ' ICNTL(49) Compact workarray S (end facto.) =',I16/
      &        ' ICNTL(14) Memory relaxation                =',I16/
      &        ' INFOG(3) Real space for factors (estimated)=',I16/
      &        ' INFOG(4) Integer space for factors (estim.)=',I16/
      &        ' Maximum frontal size (estimated)           =',I16/
      &        ' Number of nodes in the tree                =',I16/
-     &        ' Memory allowed (MB -- 0: N/A )             =',I16/
+     &        ' ICNTL(23) Memory allowed (value on host)   =',I16/
+     &        '           Sum over all procs               =',I16/
      &        ' Memory provided by user, sum of LWK_USER   =',I16/
      &        ' Effective threshold for pivoting, CNTL(1)  =',D16.4)
  173  FORMAT( ' Perform forward during facto, NRHS         =',I16)
  174  FORMAT( ' KEEP(268) Relaxed pivoting effective value =',I16)
- 180  FORMAT(/' Elapsed time for factorization             =',F12.4)
- 185  FORMAT(/' Elapsed time for (failed) factorization    =',F12.4)
-99977 FORMAT( ' INFOG(34)  Determinant (base 2 exponent)   =',I16)
-99978 FORMAT( ' RINFOG(12) Determinant (real part)         =',F16.8)
-99979 FORMAT( ' RINFOG(12) Determinant (imaginary part)    =',F16.8)
-99980 FORMAT( ' Extra copies due to In-Place stacking      =',I16)
-99981 FORMAT( ' INFOG(14)  Number of memory compress       =',I16)
-99982 FORMAT( ' INFOG(13)  Number of delayed pivots        =',I16)
-99983 FORMAT( ' Nb of singularities detected by ICNTL(56)  =',I16)
-99991 FORMAT( ' Nb of null pivots detected by ICNTL(24)    =',I16)
-99992 FORMAT( ' INFOG(28)  Estimated deficiency            =',I16)
+ 180  FORMAT(/' Elapsed time for factorization                     =',
+     &          F12.4)
+ 185  FORMAT(/' Elapsed time for (failed) factorization            =',
+     & F12.4)
+ 186  FORMAT(/' Elapsed time to process root node                  =',
+     & F12.4)
+ 187  FORMAT( ' Elapsed time under L0                      =',F12.4)
+ 188  FORMAT( ' Elapsed time under L0 (avg/max across MPI) =',
+     &          F12.4,F12.4)
+ 189  FORMAT(/' Flops under L0 layer                       =',1PD12.3)
+ 190  FORMAT(/' Flops under L0 Layer  (avg/max across MPI) =',
+     &          1PD12.3,1PD12.3)
+99977 FORMAT( ' INFOG(34)  Determinant (base 2 exponent)           =',
+     &          I16)
+99978 FORMAT( ' RINFOG(12) Determinant (real part)                 =',
+     &          F16.8)
+99979 FORMAT( ' RINFOG(12) Determinant (imaginary part)            =',
+     &          F16.8)
+99980 FORMAT( ' Extra copies due to In-Place stacking              =',
+     &          I16)
+99981 FORMAT( ' INFOG (14) Number of memory compress               =',
+     &          I16)
+99982 FORMAT( ' INFOG (13) Number of delayed pivots                =',
+     &      I16)
+99983 FORMAT( ' Nb of singularities detected by ICNTL(56)          =',
+     &      I16)
+99991 FORMAT( ' Nb of null pivots detected by ICNTL(24)            =',
+     &      I16)
+99992 FORMAT( ' INFOG (28) Estimated deficiency                    =',
+     &      I16)
+99995 FORMAT( ' RINFOG(19) Smallest pivot WITH perturbed pivots    =',
+     &     1PD10.3)
+99993 FORMAT( ' RINFOG(20) Smallest pivot WITHOUT perturbed pivots =',
+     &     1PD10.3)
+99994 FORMAT( ' RINFOG(21) Largest pivot in absolute value         =',
+     &     1PD10.3)
+99996 FORMAT( ' INFOG (24) Effective value of ICNTL(12)            =',
+     &     I16)
 99984 FORMAT(/'Leaving factorization with ...'/
-     &        ' RINFOG(2)  Operations in node assembly     =',1PD10.3/
-     &        ' ------(3)  Operations in node elimination  =',1PD10.3/
-     &        ' ICNTL (8)  Scaling effectively used        =',I16/
-     &        ' INFOG (9)  Real space for factors          =',I16/
-     &        ' INFOG(10)  Integer space for factors       =',I16/
-     &        ' INFOG(11)  Maximum front size              =',I16/
-     &        ' INFOG(29)  Number of entries in factors    =',I16)
-99985 FORMAT( ' INFOG(12)  Number of off diagonal pivots   =',I16)
-99986 FORMAT( ' INFOG(25)  Number of tiny pivots(static)   =',I16)
-99988 FORMAT( ' Number of 2x2 pivots in type 1 nodes       =',I16)
-99989 FORMAT( ' Number of 2x2 pivots in type 2 nodes       =',I16)
+     &        ' RINFOG (2) Operations in node assembly             =',
+     &          1PD10.3/                                   
+     &        ' ------ (3) Operations in node elimination          =',
+     &          1PD10.3/                                       
+     &        ' ICNTL  (8) Scaling effectively used                =',
+     &          I16/                                           
+     &        ' INFOG  (9) Real space for factors                  =',
+     &          I16/                                           
+     &        ' INFOG (10) Integer space for factors               =',
+     &          I16/                                           
+     &        ' INFOG (11) Maximum front size                      =',
+     &          I16/                                           
+     &        ' INFOG (29) Number of entries in factors            =',
+     &          I16)                                           
+99985 FORMAT( ' INFOG (12) Number of off diagonal pivots           =',
+     &          I16)                                           
+99986 FORMAT( ' INFOG (25) Number of tiny pivots(static)           =',
+     &          I16)                                           
+99988 FORMAT( ' Number of 2x2 pivots in type 1 nodes               =',
+     &          I16)
+99989 FORMAT( ' Number of 2x2 pivots in type 2 nodes               =',
+     &          I16)
       END SUBROUTINE CMUMPS_FAC_DRIVER
 C
       SUBROUTINE CMUMPS_PRINT_ALLOCATED_MEM( PROK, PROKG, PRINT_MAXAVG,
@@ -3576,6 +4408,186 @@ C
  110  FORMAT(A48,I18)
       END SUBROUTINE CMUMPS_AVGMAX_STAT8
 C
+C
+C     ==================================================================
+C
+      SUBROUTINE CMUMPS_EXTRACT_SCALING(id)
+      USE CMUMPS_STRUC_DEF
+      IMPLICIT NONE
+C
+C     Purpose:
+C     =======
+C
+C     Extract distributed scaling arrays from CMUMPS_EXTRACT_SCALING
+C     In case of unsymmetric permutation, ROWSCA and COLSCA correspond
+C     to Dr and Dc, in the expression Dr A Q Dc. In other terms, Dc
+C     is compatbile with the front column indices, it does not
+C     correspond to the column indices of A, meaning that Q is not
+C     needed to just extract the scaling values.
+C
+C
+      TYPE(CMUMPS_STRUC) :: id
+      INTEGER, EXTERNAL  :: MUMPS_PROCNODE
+C
+C     MPI
+C     ===
+C
+      INCLUDE 'mpif.h'
+C
+C     Local declarations
+C     ==================
+C
+      REAL, DIMENSION(:), POINTER :: COLSCA
+      REAL, DIMENSION(:), POINTER :: ROWSCA
+      INTEGER, PARAMETER :: MASTER = 0
+C
+      INTEGER    :: ISTEP, NPIV, LIELL
+      INTEGER    :: IERR_MPI, allocok
+      INTEGER    :: ISCA
+      INTEGER    :: JROW, JCOL, IPOS, JJ ! access to IS
+      INTEGER    :: LIW_PASSED
+      INTEGER(8) :: LALLOC
+C
+C     Free and reallocate distributed scaling arrays :
+C     - in symmetric, COLSCA_loc points on ROWSCA_loc.
+C     - not allocated if KEEP(89)=0
+C
+      NULLIFY(ROWSCA)
+      NULLIFY(COLSCA)
+      IF (associated(id%ROWSCA_loc)) THEN
+        DEALLOCATE(id%ROWSCA_loc)
+        NULLIFY(id%ROWSCA_loc)
+      ENDIF
+      IF (associated(id%COLSCA_loc)) THEN
+        IF (id%KEEP(50) .EQ. 0) THEN
+          DEALLOCATE(id%COLSCA_loc)
+        ENDIF
+        NULLIFY(id%COLSCA_loc)
+      ENDIF
+C     id%ROWSCA and id%COLSCA are available on master,
+C     allocate ROWSCA and COLSCA of order N on other procs
+      IF ( id%MYID .EQ. MASTER ) THEN
+        ROWSCA => id%ROWSCA
+        COLSCA => id%COLSCA
+        IF (.NOT. associated(ROWSCA)) THEN
+          WRITE(*,*) "Internal error 1 in CMUMPS_EXTRACT_SCALING"
+          CALL MUMPS_ABORT()
+        ENDIF
+        IF (.NOT. associated(COLSCA)) THEN
+          WRITE(*,*) "Internal error 2 in CMUMPS_EXTRACT_SCALING"
+          CALL MUMPS_ABORT()
+        ENDIF
+      ELSE
+        IF (id%KEEP(50).EQ.0) THEN
+          ALLOCATE(ROWSCA(id%N),COLSCA(id%N),stat=allocok)
+          LALLOC = int(id%N+id%N,8)
+        ELSE
+          ALLOCATE(ROWSCA(id%N),stat=allocok)
+          COLSCA => ROWSCA
+          LALLOC = int(id%N,8)
+        ENDIF
+        IF (allocok .GT. 0) THEN
+          id%INFO(1)=-13
+          CALL MUMPS_SET_IERROR(LALLOC,id%INFO(2))
+        ENDIF
+      ENDIF
+      CALL MUMPS_PROPINFO( id%ICNTL(1), id%INFO(1),
+     &                        id%COMM, id%MYID )
+C     Jump to 110 in case of error on ROWSCA or COLSCA
+C     on one of the MPI processes.
+      IF (id%INFO(1) .LT. 0) GOTO 110
+C
+      IF ( id%KEEP(89) .GT. 0) THEN
+        IF (id%KEEP(50).EQ.0) THEN
+          ALLOCATE(id%ROWSCA_loc(id%KEEP(89)),
+     &             id%COLSCA_loc(id%KEEP(89)),stat=allocok)
+          LALLOC = int(id%KEEP(89),8)*2_8
+        ELSE
+          ALLOCATE(id%ROWSCA_loc(id%KEEP(89)),stat=allocok)
+          id%COLSCA_loc => id%ROWSCA_loc
+          LALLOC = int(id%KEEP(89),8)
+        ENDIF
+        IF (allocok .GT. 0) THEN
+          id%INFO(1)=-13
+          CALL MUMPS_SET_IERROR(LALLOC,id%INFO(2))
+        ENDIF
+      ENDIF
+      CALL MUMPS_PROPINFO( id%ICNTL(1), id%INFO(1),
+     &                        id%COMM, id%MYID )
+C     Jump to 100 in case of error (we free everything)
+      IF (id%INFO(1) .LT. 0) GOTO 100
+      CALL MPI_BCAST(ROWSCA(1), id%N, MPI_REAL,
+     &               MASTER, id%COMM, IERR_MPI)
+      IF (id%KEEP(50) .EQ. 0) THEN
+        CALL MPI_BCAST(COLSCA(1), id%N, MPI_REAL,
+     &                 MASTER, id%COMM, IERR_MPI)
+      ENDIF
+      LIW_PASSED = max(id%KEEP(32),1)
+      ISCA = 1
+      IF ( id%MYID .ne. MASTER .OR.
+     &     id%KEEP(46) .eq. 1 ) THEN ! I_AM_SLAVE
+        DO ISTEP = 1, id%KEEP(28)
+          IF ( id%MYID_NODES.EQ. MUMPS_PROCNODE(
+     &         id%PROCNODE_STEPS(ISTEP),
+     &         id%KEEP(199) ) ) THEN
+              CALL MUMPS_SOL_GET_NPIV_LIELL_IPOS( ISTEP, id%KEEP,
+     &        NPIV, LIELL, IPOS,
+     &        id%IS(1), LIW_PASSED, id%PTLUST_S(1), id%STEP(1), id%N)
+            IF ( id%KEEP(50) .EQ. 0 ) THEN
+C             Row indices:
+              JROW = IPOS + 1
+C             Column indices:
+              JCOL = IPOS + 1 + LIELL
+            ELSE
+C             Use row indices because column indices may have
+C             been set to negative to flag 2x2 pivots
+              JROW = IPOS + 1
+            ENDIF
+            IF (id%KEEP(50).EQ.0) THEN
+              DO JJ = 1, NPIV
+                id%ROWSCA_loc(ISCA+JJ-1) = ROWSCA(id%IS(JROW+JJ-1))
+                id%COLSCA_loc(ISCA+JJ-1) = COLSCA(id%IS(JCOL+JJ-1))
+              ENDDO
+            ELSE
+              DO JJ = 1, NPIV
+                id%ROWSCA_loc(ISCA+JJ-1) = ROWSCA(id%IS(JROW+JJ-1))
+              ENDDO
+            ENDIF
+            ISCA = ISCA + NPIV
+          ENDIF
+        ENDDO
+      ENDIF
+C     End of EXTRACT_SCALING, we keep id%ROWSCA_loc and id%COLSCA_loc
+C     but free ROWSCA and COLSCA
+      GOTO 110
+      RETURN
+ 100  CONTINUE
+C     Exit with error, free what was allocated
+      IF (associated(id%ROWSCA_loc)) THEN
+        DEALLOCATE(id%ROWSCA_loc)
+        NULLIFY(id%ROWSCA_loc)
+      ENDIF
+      IF (associated(id%COLSCA_loc)) THEN
+        IF (id%KEEP(50) .EQ. 0) THEN
+          DEALLOCATE(id%COLSCA_loc)
+        ENDIF
+        NULLIFY(id%COLSCA_loc)
+      ENDIF
+ 110  CONTINUE
+C     Free local ROWSCA and COLSCA arrays
+      IF ( id%MYID .NE. 0) THEN
+        IF (associated(ROWSCA)) DEALLOCATE(ROWSCA)
+        IF ( id%KEEP(50) .EQ. 0 ) THEN
+          IF (associated(COLSCA)) DEALLOCATE(COLSCA)
+        ENDIF
+      ENDIF
+      NULLIFY(ROWSCA)
+      NULLIFY(COLSCA)
+      RETURN
+      END SUBROUTINE CMUMPS_EXTRACT_SCALING
+C
+C     ==================================================================
+C
       SUBROUTINE CMUMPS_EXTRACT_SCHUR_REDRHS(id)
       USE CMUMPS_STRUC_DEF
       IMPLICIT NONE
@@ -3607,6 +4619,7 @@ C
       INTEGER :: IERR
       INTEGER, PARAMETER :: MASTER = 0
       INTEGER :: ID_SCHUR, SIZE_SCHUR, LD_SCHUR, IB, BL4
+      INTEGER(4) :: I4 ! 32-bit even in 64-bit version
       INTEGER :: ROW_LENGTH, I
       INTEGER(8) :: SURFSCHUR8, BL8, SHIFT8
       INTEGER(8) :: ISCHUR_SRC, ISCHUR_DEST, ISCHUR_SYM, ISCHUR_UNS
@@ -3710,8 +4723,9 @@ C         ---------------------
 C         -----------------------------------------
 C         The processor responsible of the Schur
 C         complement sends it to the host processor
+C         Use blocks to avoid too large messages.
 C         -----------------------------------------
-          BL8=int(huge(BL4)/id%KEEP(35)/10,8)
+          BL8=int(huge(I4)/id%KEEP(35)/10,8)
           DO IB=1, int((SURFSCHUR8+BL8-1_8) / BL8)
             SHIFT8 = int(IB-1,8) * BL8                ! Where to send
             BL4    = int(min(BL8,SURFSCHUR8-SHIFT8)) ! Size of block
@@ -3814,3 +4828,145 @@ C                 of size SIZE_SCHUR.
       ENDIF
       RETURN
       END SUBROUTINE CMUMPS_EXTRACT_SCHUR_REDRHS
+      SUBROUTINE CMUMPS_EXTRACT_SINGULAR_VALUES(id)
+      USE CMUMPS_STRUC_DEF
+      IMPLICIT NONE
+C
+C  Purpose
+C  =======
+C
+C     
+      TYPE(CMUMPS_STRUC) :: id
+C
+C  Local variables
+C  ===============
+C
+      INCLUDE 'mpif.h'
+      INCLUDE 'mumps_tags.h'
+      INCLUDE 'mumps_headers.h'
+      INTEGER :: STATUS(MPI_STATUS_SIZE)
+      INTEGER :: IERR
+      INTEGER, PARAMETER :: MASTER = 0
+      INTEGER :: ID_ROOT, ALLOCOK
+C
+C  External functions
+C  ==================
+C
+      INTEGER MUMPS_PROCNODE
+      EXTERNAL MUMPS_PROCNODE
+C     Quick return in case factorization did not terminate correctly
+      IF (id%INFO(1) .LT. 0) RETURN
+C     Quick return if Postponing + rank revealing option off
+      IF (id%KEEP(19) .EQ. 0) RETURN
+C     Get Root id
+      ID_ROOT =MUMPS_PROCNODE(
+     &    id%PROCNODE_STEPS(id%STEP(id%KEEP(20))),
+     &    id%KEEP(199))
+      IF ( id%KEEP( 46 )  .NE. 1 ) THEN
+        ID_ROOT = ID_ROOT + 1
+      END IF  
+C     =================================
+C     Singular values are stored in 
+C     root%SINGULAR_VALUES
+C     We copy it to id%SINGULAR_VALUES
+C     =================================
+      IF ((ID_ROOT.EQ.id%MYID).AND.(id%MYID.EQ.MASTER)) THEN
+C        write(6,*) " singular_values already on host"
+         IF (associated(id%SINGULAR_VALUES))
+     &        DEALLOCATE(id%SINGULAR_VALUES)
+         NULLIFY(id%SINGULAR_VALUES)
+         id%NB_SINGULAR_VALUES=id%root%NB_SINGULAR_VALUES
+         ALLOCATE(id%SINGULAR_VALUES(id%NB_SINGULAR_VALUES)
+     &        , stat=ALLOCOK)
+         IF (ALLOCOK.GT.0) THEN
+            id%INFO(1)=-13
+            id%INFO(2)= id%NB_SINGULAR_VALUES
+            RETURN
+         END IF
+         CALL scopy(id%NB_SINGULAR_VALUES,
+     &        id%root%SINGULAR_VALUES(1), 1,
+     &        id%SINGULAR_VALUES(1), 1)
+      ELSE
+         IF (id%MYID.EQ.ID_ROOT) THEN
+C     Send
+C           write(6,*) " id%MYID sends singular_values "
+            CALL MPI_SEND(
+     &           id%root%NB_SINGULAR_VALUES,
+     &           1,
+     &           MPI_INTEGER,
+     &           MASTER, TAG_ROOT1,
+     &           id%COMM, IERR )
+            CALL MPI_SEND(
+     &           id%root%SINGULAR_VALUES(1),
+     &           id%root%NB_SINGULAR_VALUES,
+     &           MPI_REAL,
+     &           MASTER, TAG_ROOT2,
+     &           id%COMM, IERR )
+         ELSEIF (id%MYID.EQ.MASTER) THEN
+C     Receive
+            CALL MPI_RECV( id%NB_SINGULAR_VALUES,
+     &           1,
+     &           MPI_INTEGER, ID_ROOT, TAG_ROOT1,
+     &           id%COMM, STATUS, IERR )
+            IF (associated(id%SINGULAR_VALUES))
+     &           DEALLOCATE(id%SINGULAR_VALUES)
+            NULLIFY(id%SINGULAR_VALUES)
+            ALLOCATE(id%SINGULAR_VALUES(id%NB_SINGULAR_VALUES)
+     &           , stat=ALLOCOK)
+            IF (ALLOCOK.GT.0) THEN
+               id%INFO(1)=-13
+               id%INFO(2)= id%NB_SINGULAR_VALUES
+               RETURN
+            END IF
+            CALL MPI_RECV( id%SINGULAR_VALUES(1),
+     &           id%NB_SINGULAR_VALUES,
+     &           MPI_REAL, ID_ROOT, TAG_ROOT2,
+     &           id%COMM, STATUS, IERR )
+         ENDIF
+      ENDIF
+      RETURN
+      END SUBROUTINE CMUMPS_EXTRACT_SINGULAR_VALUES
+      SUBROUTINE CMUMPS_SET_NOMP_MAX(KEEP281, KEEP361,
+     &                               N, NOMP_MAX)
+!$    USE OMP_LIB
+C
+C  Purpose
+C  =======
+C     set NOMP_MAX from KEEP(281)
+C     on output NOMP_MAX >=0
+C
+C  Parameters
+C  ==========
+C
+      INTEGER, INTENT(IN)    :: KEEP281, KEEP361, N
+      INTEGER, INTENT(OUT)   :: NOMP_MAX
+C     
+C     Local variables
+C   
+      INTEGER :: NOMP
+C
+C     out-of-range entries treated as -1
+      NOMP_MAX= max(-1, KEEP281)
+      NOMP    = 1
+!$    NOMP = omp_get_max_threads()
+      IF (NOMP_MAX.EQ.-1) THEN
+C     automatic setting
+       IF (N.LE.KEEP361) THEN
+         NOMP_MAX = 0
+         RETURN
+       ENDIF
+       IF (NOMP.GT.1) THEN
+C       conservative because of memory allocation
+        NOMP_MAX = min(NOMP, 10)
+       ELSE
+C       no multithreading and all parallel do suppressed
+        NOMP_MAX = 0
+       ENDIF
+      ELSE
+C     NOMP_MAX >=0
+C     use provided value
+       NOMP_MAX = min(NOMP_MAX, NOMP)
+      ENDIF
+C
+      RETURN
+      END SUBROUTINE CMUMPS_SET_NOMP_MAX

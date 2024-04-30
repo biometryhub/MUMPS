@@ -1,10 +1,10 @@
 /*
  *
- *  This file is part of MUMPS 5.4.0, released
- *  on Tue Apr 13 15:26:30 UTC 2021
+ *  This file is part of MUMPS 5.7.0, released
+ *  on Tue Apr 23 10:25:09 UTC 2024
  *
  *
- *  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+ *  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
  *  Mumps Technologies, University of Bordeaux.
  *
  *  This version of MUMPS is provided to you free of charge. It is
@@ -13,6 +13,7 @@
  *  https://cecill.info/licences/Licence_CeCILL-C_V1-en.html)
  *
  */
+#include <stdlib.h>
 #include "mumps_common.h"
 /* Special case of mapping and pivnul_list -- allocated from MUMPS */
 static MUMPS_INT * MUMPS_MAPPING;
@@ -20,6 +21,8 @@ static MUMPS_INT * MUMPS_PIVNUL_LIST;
 /* as uns_perm and sym_perm */
 static MUMPS_INT * MUMPS_SYM_PERM;
 static MUMPS_INT * MUMPS_UNS_PERM;
+static MUMPS_INT * MUMPS_GLOB2LOC_RHS;
+static MUMPS_INT * MUMPS_GLOB2LOC_SOL;
 MUMPS_INT*
 mumps_get_mapping()
 {
@@ -80,6 +83,36 @@ MUMPS_NULLIFY_C_UNS_PERM()
 {
     MUMPS_UNS_PERM = 0;
 }
+MUMPS_INT*
+mumps_get_glob2loc_rhs()
+{
+    return MUMPS_GLOB2LOC_RHS;
+}
+void MUMPS_CALL
+MUMPS_ASSIGN_GLOB2LOC_RHS(MUMPS_INT * f77glob2loc_rhs)
+{
+    MUMPS_GLOB2LOC_RHS = f77glob2loc_rhs;
+}
+void MUMPS_CALL
+MUMPS_NULLIFY_C_GLOB2LOC_RHS()
+{
+    MUMPS_GLOB2LOC_RHS = 0;
+}
+MUMPS_INT*
+mumps_get_glob2loc_sol()
+{
+    return MUMPS_GLOB2LOC_SOL;
+}
+void MUMPS_CALL
+MUMPS_ASSIGN_GLOB2LOC_SOL(MUMPS_INT * f77glob2loc_sol)
+{
+    MUMPS_GLOB2LOC_SOL = f77glob2loc_sol;
+}
+void MUMPS_CALL
+MUMPS_NULLIFY_C_GLOB2LOC_SOL()
+{
+    MUMPS_GLOB2LOC_SOL = 0;
+}
 void MUMPS_CALL
 MUMPS_ICOPY_32TO64_64C_IP_C(MUMPS_INT *inouttab, MUMPS_INT8 *sizetab)
 /* Copies in-place *sizetab int values starting at address inouttab
@@ -104,4 +137,16 @@ MUMPS_ICOPY_64TO32_64C_IP_C(MUMPS_INT8 *inouttab, MUMPS_INT8 *sizetab)
        /*       outtab4[i8]=(MUMPS_INT)intab8[i8]; */
        ((MUMPS_INT *)inouttab)[i8]=(MUMPS_INT)inouttab[i8];
      }
+}
+void MUMPS_CALL
+MUMPS_MALLOC_C(MUMPS_INT8 *address, MUMPS_INT8 *size)
+{
+  void * ptr;
+  ptr=malloc(*size);
+  *address=(MUMPS_INT8)(ptr);
+}
+void MUMPS_CALL
+MUMPS_FREE_C(void *address)
+{
+  free(address);
 }

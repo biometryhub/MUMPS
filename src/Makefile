@@ -1,6 +1,6 @@
 #
-#  This file is part of MUMPS 5.4.0, released
-#  on Tue Apr 13 15:26:30 UTC 2021
+#  This file is part of MUMPS 5.7.0, released
+#  on Tue Apr 23 10:25:09 UTC 2024
 #
 #
 topdir = ..
@@ -9,7 +9,7 @@ incdir = $(topdir)/include
 
 default: d
 
-.PHONY: default all s d c z clean libcommon
+.PHONY: default all s d c z clean libcommon allshared sshared dshared cshared zshared libcommonshared
 
 all: $(incdir)/mumps_int_def.h libcommon s d c z
 
@@ -28,14 +28,25 @@ c: $(incdir)/mumps_int_def.h libcommon
 z: $(incdir)/mumps_int_def.h libcommon
 	$(MAKE) ARITH=z $(libdir)/libzmumps$(PLAT)$(LIBEXT)
 
-include $(topdir)/Makefile.inc
 
-$(incdir)/mumps_int_def.h: build_mumps_int_def 
-	./build_mumps_int_def > $(incdir)/mumps_int_def.h
-build_mumps_int_def:build_mumps_int_def.o
-	$(CC) $(OPTC) $(OPTL) build_mumps_int_def.o -o build_mumps_int_def
+# Rules for shared libraries
+allshared: $(incdir)/mumps_int_def.h libcommonshared sshared dshared cshared zshared
+libcommonshared: $(incdir)/mumps_int_def.h
+	$(MAKE) FPIC=$(FPIC_OPT) $(libdir)/libmumps_common$(PLAT)$(LIBEXT_SHARED)
+sshared: $(incdir)/mumps_int_def.h libcommonshared
+	$(MAKE) ARITH=s FPIC=$(FPIC_OPT) $(libdir)/libsmumps$(PLAT)$(LIBEXT_SHARED)
+dshared: $(incdir)/mumps_int_def.h libcommonshared
+	$(MAKE) ARITH=d FPIC=$(FPIC_OPT) $(libdir)/libdmumps$(PLAT)$(LIBEXT_SHARED)
+cshared: $(incdir)/mumps_int_def.h libcommonshared
+	$(MAKE) ARITH=c FPIC=$(FPIC_OPT) $(libdir)/libcmumps$(PLAT)$(LIBEXT_SHARED)
+zshared: $(incdir)/mumps_int_def.h libcommonshared
+	$(MAKE) ARITH=z FPIC=$(FPIC_OPT) $(libdir)/libzmumps$(PLAT)$(LIBEXT_SHARED)
+
+
+
 
 OBJS_COMMON_MOD = \
+        mumps_pivnul_mod.o \
         ana_omp_m.o\
         ana_blk_m.o\
         ana_orderings_wrappers_m.o\
@@ -53,6 +64,7 @@ OBJS_COMMON_MOD = \
         mumps_memory_mod.o\
         mumps_mpitoomp_m.o\
         mumps_ooc_common.o\
+	sol_ds_common_m.o\
         mumps_static_mapping.o\
         omp_tps_common_m.o
 
@@ -64,10 +76,10 @@ OBJS_COMMON_OTHER = \
         ana_AMDMF.o\
         bcast_errors.o\
         estim_flops.o\
-        mumps_type_size.o \
         mumps_type2_blocking.o \
         mumps_version.o \
         mumps_print_defined.o \
+        mumps_addr.o\
         mumps_common.o\
         mumps_pord.o\
         mumps_metis.o\
@@ -76,7 +88,6 @@ OBJS_COMMON_OTHER = \
         mumps_scotch.o\
         mumps_scotch64.o\
         mumps_scotch_int.o\
-        mumps_size.o\
         mumps_io.o\
         mumps_io_basic.o\
         mumps_io_thread.o\
@@ -124,7 +135,8 @@ OBJS_MOD =   \
         $(ARITH)omp_tps_m.o\
         $(ARITH)sol_lr.o\
         $(ARITH)sol_omp_m.o\
-        $(ARITH)static_ptr_m.o
+        $(ARITH)static_ptr_m.o\
+        $(ARITH)mumps_mpi3_mod.o
 
 OBJS_OTHER = \
         $(ARITH)ini_driver.o\
@@ -132,6 +144,7 @@ OBJS_OTHER = \
         $(ARITH)fac_driver.o\
         $(ARITH)sol_driver.o\
         $(ARITH)sol_distrhs.o\
+        $(ARITH)sol_distsol.o\
         $(ARITH)end_driver.o\
         $(ARITH)ana_aux_ELT.o\
         $(ARITH)ana_dist_m.o\
@@ -142,7 +155,9 @@ OBJS_OTHER = \
         $(ARITH)fac_asm_ELT.o\
         $(ARITH)fac_asm.o\
         $(ARITH)fac_b.o\
+        $(ARITH)fac_diag.o\
         $(ARITH)fac_distrib_distentry.o\
+        $(ARITH)fac_dist_arrowheads_omp.o\
         $(ARITH)fac_distrib_ELT.o\
         $(ARITH)fac_lastrtnelind.o\
         $(ARITH)fac_mem_alloc_cb.o\
@@ -192,13 +207,25 @@ OBJS_OTHER = \
         $(ARITH)tools.o\
         $(ARITH)type3_root.o
 
+include $(topdir)/Makefile.inc
+
+$(incdir)/mumps_int_def.h: mumps_int_def32_h.in  mumps_int_def64_h.in
+	if echo " $(OPTC) " | grep DINTSIZE64; then cat mumps_int_def64_h.in > $(incdir)/mumps_int_def.h; else cat mumps_int_def32_h.in > $(incdir)/mumps_int_def.h; fi
+
 $(libdir)/libmumps_common$(PLAT)$(LIBEXT):      $(OBJS_COMMON_MOD) $(OBJS_COMMON_OTHER)
 	$(AR)$@ $?
 	$(RANLIB) $@
 
+$(libdir)/libmumps_common$(PLAT)$(LIBEXT_SHARED):      $(OBJS_COMMON_MOD) $(OBJS_COMMON_OTHER)
+	$(FC) $(OPTL) $(SHARED_OPT) $^ -Wl,$(SONAME),libmumps_common$(PLAT)$(LIBEXT_SHARED) -L$(libdir) $(RPATH_OPT) $(LORDERINGS) $(LIBS) $(LIBOTHERS) -o $@ 
+
 $(libdir)/lib$(ARITH)mumps$(PLAT)$(LIBEXT):    $(OBJS_MOD) $(OBJS_OTHER)
 	$(AR)$@ $?
 	$(RANLIB) $@
+
+$(libdir)/lib$(ARITH)mumps$(PLAT)$(LIBEXT_SHARED):    $(OBJS_MOD) $(OBJS_OTHER) $(libdir)/libmumps_common$(PLAT)$(LIBEXT_SHARED)
+	$(FC) $(OPTL) $(SHARED_OPT) $(OBJS_MOD) $(OBJS_OTHER) -L$(libdir) $(LORDERINGS) $(LIBS) $(LIBOTHERS) -lmumps_common$(PLAT) -o $@ $(RPATH_OPT)
+
 
 # Dependencies between modules:
 # i) arithmetic-dependent modules:
@@ -246,7 +273,8 @@ $(ARITH)fac_front_aux.o:        $(ARITH)lr_type.o\
                                 $(ARITH)mumps_load.o\
                                 $(ARITH)mumps_ooc.o\
                                 mumps_ooc_common.o\
-                                mumps_l0_omp_m.o
+                                mumps_l0_omp_m.o \
+                                mumps_pivnul_mod.o
 
 $(ARITH)fac_front_LU_type1.o   : $(ARITH)fac_front_aux.o\
                                  $(ARITH)mumps_ooc.o\
@@ -255,7 +283,8 @@ $(ARITH)fac_front_LU_type1.o   : $(ARITH)fac_front_aux.o\
                                  $(ARITH)lr_stats.o\
                                  $(ARITH)ana_lr.o\
                                  $(ARITH)mumps_lr_data_m.o\
-                                 mumps_l0_omp_m.o
+                                 mumps_l0_omp_m.o\
+                                 mumps_pivnul_mod.o
 
 $(ARITH)fac_front_LU_type2.o   : $(ARITH)fac_front_aux.o\
                                  $(ARITH)fac_front_type2_aux.o\
@@ -268,7 +297,8 @@ $(ARITH)fac_front_LU_type2.o   : $(ARITH)fac_front_aux.o\
                                  $(ARITH)lr_stats.o\
                                  $(ARITH)ana_lr.o\
                                  $(ARITH)mumps_lr_data_m.o\
-                                 $(ARITH)mumps_struc_def.o
+                                 $(ARITH)mumps_struc_def.o\
+                                 mumps_pivnul_mod.o
 
 $(ARITH)fac_front_LDLT_type1.o : $(ARITH)fac_front_aux.o\
                                  $(ARITH)mumps_ooc.o\
@@ -277,7 +307,8 @@ $(ARITH)fac_front_LDLT_type1.o : $(ARITH)fac_front_aux.o\
                                  $(ARITH)lr_stats.o\
                                  $(ARITH)ana_lr.o\
                                  $(ARITH)mumps_lr_data_m.o\
-                                 mumps_l0_omp_m.o
+                                 mumps_l0_omp_m.o\
+                                 mumps_pivnul_mod.o
 
 $(ARITH)fac_front_LDLT_type2.o : $(ARITH)fac_front_aux.o\
                                  $(ARITH)fac_front_type2_aux.o\
@@ -289,7 +320,8 @@ $(ARITH)fac_front_LDLT_type2.o : $(ARITH)fac_front_aux.o\
                                  $(ARITH)lr_stats.o\
                                  $(ARITH)ana_lr.o\
                                  $(ARITH)mumps_lr_data_m.o\
-                                 $(ARITH)mumps_struc_def.o
+                                 $(ARITH)mumps_struc_def.o\
+                                 mumps_pivnul_mod.o
 
 $(ARITH)fac_front_type2_aux.o : mumps_ooc_common.o\
                                 $(ARITH)fac_front_aux.o\
@@ -298,7 +330,8 @@ $(ARITH)fac_front_type2_aux.o : mumps_ooc_common.o\
                                 $(ARITH)mumps_comm_buffer.o\
                                 $(ARITH)mumps_load.o\
                                 mumps_comm_ibcast.o\
-                                fac_ibct_data_m.o
+                                fac_ibct_data_m.o\
+                                mumps_pivnul_mod.o
 
 $(ARITH)fac_lr.o:               $(ARITH)lr_core.o\
                                 $(ARITH)lr_type.o\
@@ -317,14 +350,16 @@ $(ARITH)fac_omp_m.o:            $(ARITH)fac_asm_master_m.o\
                                 $(ARITH)lr_stats.o\
                                 $(ARITH)mumps_struc_def.o\
                                 omp_tps_common_m.o\
-                                mumps_l0_omp_m.o
+                                mumps_l0_omp_m.o \
+                                mumps_pivnul_mod.o
 
 $(ARITH)fac_sol_l0omp_m.o:      $(ARITH)mumps_struc_def.o
 
 $(ARITH)fac_omp_m.o:            $(ARITH)mumps_struc_def.o \
                                 $(ARITH)fac_mem_dynamic.o\
                                 $(ARITH)omp_tps_m.o\
-                                omp_tps_common_m.o
+                                omp_tps_common_m.o\
+                                mumps_pivnul_mod.o
 
 $(ARITH)fac_par_m.o:            $(ARITH)mumps_load.o\
                                 $(ARITH)mumps_ooc.o\
@@ -339,7 +374,8 @@ $(ARITH)fac_par_m.o:            $(ARITH)mumps_load.o\
                                 $(ARITH)mumps_struc_def.o\
                                 $(ARITH)lr_stats.o\
                                 omp_tps_common_m.o\
-                                mumps_l0_omp_m.o
+                                mumps_l0_omp_m.o\
+                                mumps_pivnul_mod.o
 
 $(ARITH)lr_core.o:              $(ARITH)lr_type.o\
                                 $(ARITH)mumps_lr_data_m.o\
@@ -378,12 +414,14 @@ $(ARITH)mumps_save_restore.o:   $(ARITH)mumps_struc_def.o \
                                 $(ARITH)mumps_lr_data_m.o \
                                 $(ARITH)mumps_ooc.o \
                                 $(ARITH)fac_sol_l0omp_m.o \
+                                $(ARITH)mumps_mpi3_mod.o \
                                 front_data_mgt_m.o
 
 $(ARITH)mumps_save_restore_files.o : $(ARITH)mumps_struc_def.o
 
 $(ARITH)sol_lr.o:               $(ARITH)lr_type.o\
                                 $(ARITH)lr_stats.o\
+                                $(ARITH)lr_core.o\
                                 $(ARITH)mumps_lr_data_m.o
 
 $(ARITH)sol_omp_m.o:            $(ARITH)mumps_struc_def.o
@@ -411,13 +449,13 @@ $(OBJS_OTHER):$(OBJS_COMMON_MOD) $(OBJS_MOD)
 
 .SUFFIXES: .c .F .o
 .F.o:
-	$(FC) $(OPTF) -I. -I../include $(INCS) $(IORDERINGSF) $(ORDERINGSF) -c $*.F $(OUTF)$*.o
+	$(FC) $(OPTF) $(FPIC) -I. -I../include $(INCS) $(IORDERINGSF) $(ORDERINGSF) -c $*.F $(OUTF)$*.o
 .c.o:
-	$(CC) $(OPTC) -I../include $(INCS) $(CDEFS) $(IORDERINGSC) $(ORDERINGSC) -c $*.c $(OUTC)$*.o
+	$(CC) $(OPTC) $(FPIC) -I../include $(INCS) $(CDEFS) $(IORDERINGSC) $(ORDERINGSC) -c $*.c $(OUTC)$*.o
 
 $(ARITH)mumps_c.o:	mumps_c.c
-	$(CC) $(OPTC) -I../include $(INCS) $(CDEFS) -DMUMPS_ARITH=MUMPS_ARITH_$(ARITH) \
+	$(CC) $(OPTC) $(FPIC) -I../include $(INCS) $(CDEFS) -DMUMPS_ARITH=MUMPS_ARITH_$(ARITH) \
 	      $(IORDERINGSC) $(ORDERINGSC) -c mumps_c.c $(OUTC)$@
 
 clean:
-	$(RM) *.o *.mod $(incdir)/mumps_int_def.h build_mumps_int_def
+	$(RM) *.o *.mod $(incdir)/mumps_int_def.h

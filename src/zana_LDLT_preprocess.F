@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -138,11 +138,9 @@ C
       INTEGER(8), intent(out) :: IQ(N)
       INTEGER, intent(out)    :: FLAG(N), ICMP(N)
       LOGICAL, intent(inout) :: INPLACE64_GRAPH_COPY
-      INTEGER    :: MP, N11, N22
+      INTEGER    :: N11, N22
       INTEGER    :: I, J, N1, K
       INTEGER(8) :: NDUP, L, K8, K1, K2, LAST
-      INTRINSIC nint
-      MP = ICNTL(2)
       IERROR = 0
       N22 = KEEP(93)
       N11 = KEEP(94)

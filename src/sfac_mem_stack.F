@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -23,10 +23,13 @@ C
      &    FPERE, COMM, MYID, IPOOL, LPOOL, LEAF, NSTK_S,
      &    PERM, BUFR, LBUFR, LBUFR_BYTES, NBFIN, root,
      &    OPASSW, ITLOC, RHS_MUMPS,
-     &    FILS, DAD, PTRARW, PTRAIW, INTARR, DBLARR,
+     &    FILS, DAD, PTRARW, PTRAIW,
+     &    PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
+     &    INTARR, DBLARR,
      &    ND, FRERE, LPTRAR, NELT, FRTPTR, FRTELT,
      &    ISTEP_TO_INIV2, TAB_POS_IN_PERE
      &               , LRGROUPS
+     &  , FLOP_ESTIM_ACC
      &    )
       USE SMUMPS_BUF
       USE SMUMPS_LOAD
@@ -49,18 +52,22 @@ C
       INTEGER PTRIST(KEEP(28)), PTLUST_S(KEEP(28))
       INTEGER STEP(N), PIMASTER(KEEP(28)), NE(KEEP(28))
       REAL    A(LA)
-      INTEGER, intent(in) :: LRGROUPS(N)
+      INTEGER, intent(in) :: LRGROUPS(KEEP(280))
       DOUBLE PRECISION OPASSW, OPELIW
       REAL DBLARR(KEEP8(26))
       INTEGER INTARR(KEEP8(27)) 
       INTEGER ITLOC( N + KEEP(253) ), FILS( N ), DAD( KEEP(28) ),
      &        ND( KEEP(28) ), FRERE( KEEP(28) )
-      REAL :: RHS_MUMPS(KEEP(255))
+      REAL :: RHS_MUMPS(KEEP8(85))
       INTEGER ISTEP_TO_INIV2(KEEP(71)), 
      &        TAB_POS_IN_PERE(SLAVEF+2,max(1,KEEP(56)))
       INTEGER NELT, LPTRAR
       INTEGER FRTPTR( N+1 ), FRTELT( NELT )
       INTEGER(8), INTENT(IN) :: PTRAIW( LPTRAR ), PTRARW( LPTRAR )
+      INTEGER(8), INTENT(IN) :: PTR8ARR(KEEP(193))
+      INTEGER, INTENT(IN) :: NINCOLARR(KEEP(194))
+      INTEGER, INTENT(IN) :: NINROWARR(KEEP(195))
+      INTEGER, INTENT(IN) :: PTRDEBARR(KEEP(196))
       INTEGER LPOOL, LEAF, COMP
       INTEGER IPOOL( LPOOL )
       INTEGER NSTK_S( KEEP(28) )
@@ -69,6 +76,7 @@ C
       INTEGER BUFR( LBUFR )
       INTEGER NBFIN
       INTEGER NFRONT_ESTIM,NELIM_ESTIM
+      DOUBLE PRECISION FLOP_ESTIM_ACC
       INTEGER MUMPS_PROCNODE
       EXTERNAL MUMPS_PROCNODE
       INCLUDE 'mpif.h'
@@ -103,9 +111,8 @@ C
       DOUBLE PRECISION FLOP1, FLOP1_EFFECTIVE
       LOGICAL BLOCKING, SET_IRECV, MESSAGE_RECEIVED
       LOGICAL SSARBR, SSARBR_ROOT, MUMPS_INSSARBR,
-     & MUMPS_IN_OR_ROOT_SSARBR, MUMPS_ROOTSSARBR
-      EXTERNAL MUMPS_INSSARBR, MUMPS_IN_OR_ROOT_SSARBR,
-     & MUMPS_ROOTSSARBR
+     & MUMPS_IN_OR_ROOT_SSARBR
+      EXTERNAL MUMPS_INSSARBR, MUMPS_IN_OR_ROOT_SSARBR
       LP = ICNTL(1)
       IF (ICNTL(4) .LE. 0) LP = -1
       INPLACE = .FALSE.
@@ -115,7 +122,7 @@ C
       NFRONT = IW(IOLDPS+KEEP(IXSZ))
       NPIV   = IW(IOLDPS + 1+KEEP(IXSZ))       
       NMAXNPIV = max(NPIV, NMAXNPIV)
-      NASS   = iabs(IW(IOLDPS + 2+KEEP(IXSZ))) 
+      NASS   = abs(IW(IOLDPS + 2+KEEP(IXSZ))) 
       NSLAVES=  IW(IOLDPS+5+KEEP(IXSZ))
       H_INODE= 6 + NSLAVES + KEEP(IXSZ)
       LCONT = NFRONT - NPIV
@@ -214,6 +221,9 @@ C
      &       KEEP(50),1,FLOP1)
       END IF
       FLOP1=-FLOP1
+      IF (KEEP(400).GT.0) THEN
+        FLOP_ESTIM_ACC = FLOP_ESTIM_ACC + FLOP1
+      ENDIF
       IF (SSARBR_ROOT) THEN
         CALL SMUMPS_LOAD_UPDATE(0,.FALSE.,FLOP1,KEEP,KEEP8)
       ELSE
@@ -224,6 +234,9 @@ C
      &       .AND. KEEP(201).NE.1 
      &    .AND. (.NOT.COMPRESS_PANEL.OR..NOT.LR_SOLVE)
      &       ) THEN
+          MUST_COMPACT_FACTORS = .TRUE.
+          GOTO 190 
+        ELSE IF ( KEEP(50) .NE. 0 .AND. KEEP(459).GT.1) THEN
           MUST_COMPACT_FACTORS = .TRUE.
           GOTO 190 
         ELSE
@@ -238,13 +251,11 @@ C
        SHIFT_VAL_SON      = int(NASS,8)*int(NFRONT+1,8)
        IF (TYPE.EQ.1) THEN
          CALL SMUMPS_BUILD_AND_SEND_CB_ROOT(
-     &    COMM_LOAD, ASS_IRECV, 
-     &    N, INODE, FPERE,
+     &    COMM_LOAD, ASS_IRECV, N, INODE, FPERE,
      &    PTLUST_S, PTRAST,
      &    root, NCB, NCB, SHIFT_LIST_ROW_SON,
      &    SHIFT_LIST_COL_SON , SHIFT_VAL_SON, NFRONT,
      &    ROOT_CONT_STATIC, MYID, COMM,
-     &
      &    BUFR, LBUFR, LBUFR_BYTES, PROCNODE_STEPS, POSFAC,
      &    IWPOS, IWPOSCB, IPTRLU, LRLU, LRLUS, IW, LIW, A, LA,
      &    PTRIST, PTLUST_S, PTRFAC,
@@ -252,11 +263,11 @@ C
      &    NSTK_S, COMP, IFLAG, IERROR, PERM,
      &    IPOOL, LPOOL, LEAF, NBFIN, SLAVEF,
      &    OPASSW, OPELIW, ITLOC, RHS_MUMPS, FILS, DAD, PTRARW, PTRAIW,
+     &    PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
      &    INTARR,DBLARR,ICNTL,KEEP,KEEP8,DKEEP,.FALSE., ND, FRERE,
      &    LPTRAR, NELT, FRTPTR, FRTELT, 
-     &    ISTEP_TO_INIV2, TAB_POS_IN_PERE
-     &               , LRGROUPS
-     &     )
+     &    ISTEP_TO_INIV2, TAB_POS_IN_PERE,
+     &    LRGROUPS, 0, 0, 0 )
           IF (IFLAG < 0 ) GOTO 500
        ENDIF
        MSGDEST=  MUMPS_PROCNODE(PROCNODE_STEPS(STEP(FPERE)),KEEP(199))
@@ -300,6 +311,7 @@ C
      &       IPOOL, LPOOL, LEAF, NBFIN, MYID, SLAVEF,
      &       root, OPASSW, OPELIW, ITLOC, RHS_MUMPS,
      &       FILS, DAD, PTRARW, PTRAIW,
+     &       PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
      &       INTARR, DBLARR, ICNTL, KEEP,KEEP8,DKEEP,
      &       ND, FRERE, LPTRAR, NELT,
      &       FRTPTR, FRTELT, 
@@ -381,6 +393,7 @@ C
      &
      &       root, OPASSW, OPELIW, ITLOC, RHS_MUMPS,
      &       FILS, DAD, PTRARW, PTRAIW,
+     &       PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
      &       INTARR, DBLARR, ICNTL, KEEP,KEEP8,DKEEP, ND, FRERE,
      &       LPTRAR, NELT, FRTPTR, FRTELT,
      &       ISTEP_TO_INIV2, TAB_POS_IN_PERE, .TRUE.  
@@ -512,9 +525,10 @@ C
       IF ( KEEP(50).NE.0 .AND. TYPE .EQ. 1 
      &     .AND. MUST_COMPACT_FACTORS ) THEN
         POSELT = PTRFAC(STEP(INODE))
-        CALL SMUMPS_COMPACT_FACTORS(A(POSELT), LDA, 
-     &                         NPIV, NBROW, KEEP(50),
-     &                         int(LDA,8)*int(NBROW+NPIV,8))
+        CALL SMUMPS_COMPACT_FACTORS( A(POSELT), LDA, 
+     &             NPIV, NBROW, KEEP,
+     &             int(LDA,8)*int(NBROW+NPIV,8),
+     &             IW( PTLUST_S(STEP(INODE)) + H_INODE + NFRONT ) )
         MUST_COMPACT_FACTORS = .FALSE.
       ENDIF
       IF (COMPRESS_CB.AND.(LREQCB.EQ.0)) GOTO 190
@@ -580,16 +594,17 @@ C
  190  CONTINUE
       IF (MUST_COMPACT_FACTORS) THEN
        POSELT = PTRFAC(STEP(INODE))
-       CALL SMUMPS_COMPACT_FACTORS(A(POSELT), LDA, 
-     &                         NPIV, NBROW, KEEP(50),
-     &                         int(LDA,8)*int(NBROW+NPIV,8))
+       CALL SMUMPS_COMPACT_FACTORS( A(POSELT), LDA,
+     &             NPIV, NBROW, KEEP,
+     &             int(LDA,8)*int(NBROW+NPIV,8),
+     &             IW( PTLUST_S(STEP(INODE)) + H_INODE + NFRONT ) )
        MUST_COMPACT_FACTORS = .FALSE.
       ENDIF
       IOLDPS = PTLUST_S(STEP(INODE))
-      IW(IOLDPS+KEEP(IXSZ))     = NBCOL
-      IW(IOLDPS + 1+KEEP(IXSZ)) = NASS - NPIV
+      IW(IOLDPS+KEEP(IXSZ))     = NBCOL       
+      IW(IOLDPS + 1+KEEP(IXSZ)) = NASS - NPIV 
       IF (TYPE.EQ.2) THEN
-        IW(IOLDPS + 2+KEEP(IXSZ)) = NASS
+        IW(IOLDPS + 2+KEEP(IXSZ)) = NASS      
       ELSE
         IW(IOLDPS + 2+KEEP(IXSZ)) = NFRONT
       ENDIF

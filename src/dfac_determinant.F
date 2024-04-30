@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -117,7 +117,7 @@ C
       END SUBROUTINE DMUMPS_DETER_REDUCTION
       SUBROUTINE DMUMPS_DETERREDUCE_FUNC(INV, INOUTV, NEL, DATATYPE)
       IMPLICIT NONE
-#if defined(WORKAROUNDINTELILP64MPI2INTEGER)
+#if defined(WORKAROUNDINTELILP64MPI2INTEGER) || defined(WORKAROUNDILP64MPICUSTOMREDUCE)
       INTEGER(4), INTENT(IN)    :: NEL, DATATYPE
 #else
       INTEGER, INTENT(IN)    :: NEL, DATATYPE
@@ -152,25 +152,24 @@ C
       NEXP=-NEXP
       RETURN
       END SUBROUTINE DMUMPS_DETER_SCALING_INVERSE
-      SUBROUTINE DMUMPS_DETER_SIGN_PERM(DETER, N, VISITED, PERM)
+      SUBROUTINE DMUMPS_DETER_SIGN_PERM(DETER, N, PERM)
       IMPLICIT NONE
       DOUBLE PRECISION, intent(inout) :: DETER
       INTEGER, intent(in)    :: N
-      INTEGER, intent(inout) :: VISITED(N)
-      INTEGER, intent(in)    :: PERM(N)
+      INTEGER, intent(inout) :: PERM(N)
       INTEGER I, J, K
       K = 0
       DO I = 1, N
-        IF (VISITED(I) .GT. N) THEN
-          VISITED(I)=VISITED(I)-N-N-1
-          CYCLE
+        IF (PERM(I) .LT. 0) THEN
+          PERM(I)=-PERM(I)
+        ELSE 
+          J = PERM(I)
+          DO WHILE (J.NE.I)
+            PERM(J)=-PERM(J)
+            K = K + 1
+            J = -PERM(J) 
+          ENDDO
         ENDIF
-        J = PERM(I)
-        DO WHILE (J.NE.I)
-          VISITED(J) = VISITED(J) + N + N + 1
-          K = K + 1
-          J = PERM(J)
-        ENDDO
       ENDDO
       IF (mod(K,2).EQ.1) THEN
         DETER = -DETER

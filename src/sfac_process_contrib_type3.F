@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -19,7 +19,9 @@ C
      &     COMP, LRLUS, IPOOL, LPOOL, LEAF,
      &     FILS, DAD, MYID,
      &     LPTRAR, NELT, FRTPTR, FRTELT,
-     &     PTRAIW, PTRARW, INTARR, DBLARR,
+     &     PTRAIW, PTRARW,
+     &     PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
+     &     INTARR, DBLARR,
      &     KEEP, KEEP8, DKEEP, IFLAG, IERROR, COMM, COMM_LOAD,
      &     ITLOC, RHS_MUMPS,
      &     ND,PROCNODE_STEPS, SLAVEF, OPASSW )
@@ -43,7 +45,7 @@ C
       INTEGER PTRIST(KEEP(28))
       INTEGER PTLUST(KEEP(28))
       INTEGER STEP(N), PIMASTER(KEEP(28)), ITLOC( N+KEEP(253) )
-      REAL :: RHS_MUMPS(KEEP(255))
+      REAL :: RHS_MUMPS(KEEP8(85))
       INTEGER BUFR( LBUFR_BYTES )
       INTEGER IW( LIW )
       INTEGER ND(KEEP(28)), PROCNODE_STEPS(KEEP(28))
@@ -54,13 +56,15 @@ C
       INTEGER LPTRAR, NELT
       INTEGER FRTPTR( N+1 ), FRTELT( NELT )
       INTEGER(8), INTENT(IN) :: PTRAIW( LPTRAR ), PTRARW( LPTRAR )
+      INTEGER(8), INTENT(IN) :: PTR8ARR(KEEP(193))
+      INTEGER, INTENT(IN) :: NINCOLARR(KEEP(194))
+      INTEGER, INTENT(IN) :: NINROWARR(KEEP(195))
+      INTEGER, INTENT(IN) :: PTRDEBARR(KEEP(196))
       INTEGER INTARR(KEEP8(27))
       REAL DBLARR(KEEP8(26))
       DOUBLE PRECISION OPASSW
         INCLUDE 'mpif.h'
         INTEGER IERR
-        EXTERNAL MUMPS_PROCNODE
-        INTEGER MUMPS_PROCNODE
         INTEGER POSITION, LOCAL_M, LOCAL_N, LREQI
         INTEGER(8) :: LREQA, POS_ROOT
         INTEGER NSUBSET_ROW, NSUBSET_COL, IROOT, ISON, NSUBSET_COL_EFF
@@ -132,7 +136,9 @@ C
      &                IW, LIW, A, LA,
      &                FILS, DAD, MYID, SLAVEF, PROCNODE_STEPS,
      &                LPTRAR, NELT, FRTPTR, FRTELT,
-     &                PTRAIW, PTRARW, INTARR, DBLARR,
+     &                PTRAIW, PTRARW,
+     &                PTR8ARR, NINCOLARR, NINROWARR, PTRDEBARR,
+     &                INTARR, DBLARR,
      &                LRLU, IPTRLU,
      &                IWPOS, IWPOSCB, PTRIST, PTRAST,
      &                STEP, PIMASTER, PAMASTER, ITLOC, RHS_MUMPS,

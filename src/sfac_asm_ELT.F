@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -31,13 +31,13 @@ C
       INTEGER IW(LIW), ITLOC(N+KEEP(253)), STEP(N),
      &        PTRIST(KEEP(28)), FILS(N)
       INTEGER(8), INTENT(IN) :: PTRARW(NELT+1), PTRAIW(NELT+1)
-      REAL :: RHS_MUMPS(KEEP(255))
+      REAL :: RHS_MUMPS(KEEP8(85))
       INTEGER INTARR(KEEP8(27))
       INTEGER FRT_PTR(N+1), FRT_ELT(NELT)
       REAL :: A(LA)
       REAL :: DBLARR(KEEP8(26))
       DOUBLE PRECISION OPASSW, OPELIW
-      INTEGER, INTENT(IN)    :: LRGROUPS(N)
+      INTEGER, INTENT(IN)    :: LRGROUPS(KEEP(280))
       INTEGER(8) :: POSELT
       REAL, DIMENSION(:), POINTER :: A_PTR
       INTEGER(8) :: LA_PTR
@@ -92,13 +92,13 @@ C
       INTEGER(8), intent(in) :: KEEP8(150)
       INTEGER, intent(inout) :: ITLOC(N+KEEP(253))
       REAL, intent(inout) :: A(LA)
-      REAL, intent(in)    :: RHS_MUMPS(KEEP(255))
+      REAL, intent(in)    :: RHS_MUMPS(KEEP8(85))
       INTEGER, intent(in)    :: INTARR(LINTARR)
       REAL, intent(in)    :: DBLARR(LDBLARR)
       INTEGER, intent(in)    :: FRT_PTR(N+1), FRT_ELT(NELT)
       INTEGER, intent(in)    :: FILS(N)
       INTEGER(8), intent(in) :: PTRAIW(NELT+1), PTRARW(NELT+1)
-      INTEGER, INTENT(IN)    :: LRGROUPS(N)
+      INTEGER, INTENT(IN)    :: LRGROUPS(KEEP(280))
 !$    INTEGER :: NOMP
 !$    INTEGER(8) :: CHUNK8  
 !$    INTEGER    :: CHUNK
@@ -128,7 +128,11 @@ C
 !$    NOMP = OMP_GET_MAX_THREADS()
       IF (KEEP(50) .EQ. 0 .OR. NBROWF .LT. KEEP(63)) THEN
 !$      CHUNK8 = int(KEEP(361),8)
+#if defined(_CRAYFTN)
+!$OMP   PARALLEL DO PRIVATE(JJ8) SCHEDULE(STATIC, KEEP(361))
+#else
 !$OMP   PARALLEL DO PRIVATE(JJ8) SCHEDULE(STATIC, CHUNK8)
+#endif
 !$OMP&  IF (int(NBROWF,8)*int(NBCOLF,8) > int(KEEP(361),8)
 !$OMP&    .AND. NOMP .GT. 1)
         DO JJ8=POSELT, POSELT+int(NBROWF,8)*int(NBCOLF,8)-1_8
@@ -144,8 +148,9 @@ C
           NB_BLR_LS = NPARTSCB
           call MAX_CLUSTER(BEGS_BLR_LS,NB_BLR_LS+1,MAXI_CLUSTER)
           DEALLOCATE(BEGS_BLR_LS)
-          CALL COMPUTE_BLR_VCS(KEEP(472), IBCKSZ2, KEEP(488), NASS)
-          MINSIZE = int(IBCKSZ2 / 2)
+          CALL COMPUTE_BLR_VCS(KEEP(472), IBCKSZ2, KEEP(488), NASS,
+     &                         NBCOLF, KEEP(35))
+          MINSIZE = int(IBCKSZ2 / 3)
           TOPDIAG = max(2*MINSIZE + MAXI_CLUSTER-1, TOPDIAG)
         ENDIF
 !$      CHUNK = max( KEEP(360)/2,

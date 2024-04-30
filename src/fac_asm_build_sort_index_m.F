@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -13,27 +13,36 @@ C  https://cecill.info/licences/Licence_CeCILL-C_V1-en.html)
 C
       MODULE MUMPS_BUILD_SORT_INDEX_M
       CONTAINS
-      SUBROUTINE MUMPS_BUILD_SORT_INDEX(MYID, INODE, N, IOLDPS,
-     &           HF, NFRONT, NFRONT_EFF, PERM, DAD,
-     &           NASS1, NASS, NUMSTK, NUMORG, IWPOSCB, 
-     &           IFSON, STEP, PIMASTER, PTRIST, PTRAIW, IW, LIW, 
+      SUBROUTINE MUMPS_BUILD_SORT_INDEX(
+     &           MYID, INODE, N, IOLDPS, HF, LP, LPOK, 
+     &           NFRONT, NFRONT_EFF, PERM, DAD,
+     &           NASS1, NASS, NUMSTK, NUMORG, IWPOSCB, IWPOS,
+     &           IFSON, STEP, PIMASTER, PTRIST, PTR8ARR,
+     &           NINCOLARR, NINROWARR, PTRDEBARR, IW, LIW, 
      &           INTARR, LINTARR, ITLOC, FILS, FRERE_STEPS, 
      &           SON_LEVEL2, NIV1, KEEP,KEEP8, IFLAG,
      &           ISON_IN_PLACE, PROCNODE_STEPS, SLAVEF,
      &           SONROWS_PER_ROW, LSONROWS_PER_ROW
+     &           , MUMPS_TPS_ARR, L0_OMP_MAPPING
      & )
+      USE MUMPS_TPS_M
       IMPLICIT NONE
       INTEGER INODE, N, IOLDPS, HF, NFRONT, NASS1, LIW, NASS,
-     &        NUMSTK, NUMORG, IFSON, MYID
-      INTEGER, intent(in) ::  ISON_IN_PLACE
+     &        NUMSTK, NUMORG, IFSON, MYID, LP
+      LOGICAL, intent(in) :: LPOK
+      INTEGER, intent(in) :: ISON_IN_PLACE
       INTEGER KEEP(500)
       INTEGER(8) KEEP8(150)
-      INTEGER(8), INTENT(IN) :: PTRAIW(N)
+      INTEGER(8), INTENT(IN) :: PTR8ARR(KEEP(193))
+      INTEGER, INTENT(IN) :: NINCOLARR(KEEP(194))
+      INTEGER, INTENT(IN) :: NINROWARR(KEEP(195))
+      INTEGER, INTENT(IN) :: PTRDEBARR(KEEP(196))
       INTEGER STEP(N), PIMASTER(KEEP(28)), PTRIST(KEEP(28)),
      &        ITLOC(N+KEEP(253)), FILS(N), FRERE_STEPS(KEEP(28)),
      &        PERM(N)
       INTEGER, TARGET :: IW(LIW)
       INTEGER, INTENT(IN), TARGET :: IWPOSCB
+      INTEGER, INTENT(IN)         :: IWPOS
       INTEGER(8), INTENT(IN) :: LINTARR
       INTEGER :: INTARR(LINTARR)
       LOGICAL, intent(in)    :: NIV1
@@ -42,6 +51,8 @@ C
       INTEGER, intent(out)   :: NFRONT_EFF
       INTEGER, intent(in)    :: DAD (KEEP(28))
       INTEGER, intent(in) :: PROCNODE_STEPS(KEEP(28)), SLAVEF
+      TYPE (MUMPS_TPS_T), TARGET, OPTIONAL :: MUMPS_TPS_ARR(:)
+      INTEGER, intent(in), OPTIONAL :: L0_OMP_MAPPING(:)
       INTEGER, intent(in)    :: LSONROWS_PER_ROW
       INTEGER, intent(out)   :: SONROWS_PER_ROW(LSONROWS_PER_ROW)
       INTEGER NELIM_SON_IN_PLACE 
@@ -57,14 +68,19 @@ C
       INTEGER INBPROCFILS_SON
       INTEGER TYPESPLIT
       INCLUDE 'mumps_headers.h'
+      INTEGER :: ITHREAD
       INTEGER, POINTER :: SON_IWPOSCB
       INTEGER, POINTER, DIMENSION(:) :: SON_IW
-      INTEGER allocok
-      INTEGER, ALLOCATABLE, DIMENSION(:) :: PTTRI, PTLAST
+      INTEGER, POINTER, DIMENSION(:) :: PTTRI, PTLAST
+      INTEGER                        :: LREQ, allocok
+      INTEGER, ALLOCATABLE, TARGET   :: TMP_ALLOC_ARRAY(:)
+      INTEGER :: ISTEP, IARR1, IARR1DAD, IORGDAD
       INTEGER  MUMPS_TYPESPLIT, MUMPS_TYPENODE
       EXTERNAL MUMPS_TYPESPLIT, MUMPS_TYPENODE 
       IW(IOLDPS+XXNBPR) = 0
-      TYPESPLIT  = MUMPS_TYPESPLIT (PROCNODE_STEPS(STEP(INODE)), 
+      ISTEP = STEP(INODE)
+      IARR1 = PTRDEBARR( ISTEP )
+      TYPESPLIT  = MUMPS_TYPESPLIT (PROCNODE_STEPS(ISTEP), 
      &              KEEP(199))
       SON_LEVEL2 = .FALSE.
       IOLDP2     = IOLDPS + HF - 1
@@ -111,6 +127,15 @@ C
         ENDIF
         SON_IW      => IW
         SON_IWPOSCB => IWPOSCB
+        IF (KEEP(400) .GT. 0 ) THEN
+          IF (present( L0_OMP_MAPPING )) THEN
+            ITHREAD=L0_OMP_MAPPING(STEP(IFSON))
+            IF (ITHREAD .GT. 0) THEN
+              SON_IW      => MUMPS_TPS_ARR(ITHREAD)%IW
+              SON_IWPOSCB => MUMPS_TPS_ARR(ITHREAD)%IWPOSCB
+            ENDIF
+          ENDIF
+        ENDIF
         IF (K2 .GT. SON_IWPOSCB) THEN
           INBPROCFILS_SON = K2 + XXNBPR
         ELSE
@@ -153,13 +178,11 @@ C
          IW(IOLDP2 + NTOTFS) = JT1
         ENDDO
         NFRONT_EFF = NTOTFS
-        IBROT = INODE
         DO IORG = 1, NUMORG
-          J18 = PTRAIW(IBROT) + 2
+          J18 = PTR8ARR(IARR1+IORG-1)
           JT1 = INTARR(J18)
           INTARR(J18) = ITLOC(JT1)
-          IBROT = FILS(IBROT)
-         J28 = J18 + INTARR(J18 - 2) - INTARR(J18 - 1)
+         J28 = J18 +NINCOLARR(IARR1+IORG-1)+NINROWARR(IARR1+IORG-1)
          J18 = J18 + 1
          IF (J18 .LE. J28) THEN
           DO JJ8 = J18, J28
@@ -174,15 +197,18 @@ C
         ENDDO
         RETURN   
       ENDIF
-      ALLOCATE(PTTRI(NUMSTK+1), stat=allocok)
-      IF (allocok .GT. 0) THEN
+      LREQ= 2*NUMSTK+2
+      IF ((IWPOS + LREQ -1) .GT. IWPOSCB) THEN
+       ALLOCATE(TMP_ALLOC_ARRAY(LREQ), stat=allocok)
+       IF (allocok .GT. 0) THEN
         IFLAG = -13
         GOTO 800
-      ENDIF
-      ALLOCATE(PTLAST(NUMSTK+1), stat=allocok)
-      IF (allocok .GT. 0) THEN
-        IFLAG = -13
-        GOTO 800
+       ENDIF
+       PTTRI  => TMP_ALLOC_ARRAY(1:NUMSTK+1)
+       PTLAST => TMP_ALLOC_ARRAY(NUMSTK+2:LREQ)
+      ELSE
+       PTTRI  => IW(IWPOS:IWPOS+NUMSTK)
+       PTLAST => IW(IWPOS+NUMSTK+1:IWPOS+LREQ-1)
       ENDIF
       NFRONT_EFF = NASS1
       IF ( ISON_IN_PLACE > 0 ) THEN
@@ -218,19 +244,21 @@ C
       IN = INODE
       INEW = IOLDPS + HF +  NTOTFS
       INEW1 = NTOTFS + 1
-      JDEBROW8 = PTRAIW(INODE)+3
+      JDEBROW8 = PTR8ARR(IARR1) + 1
       PTTRI(NUMSTK+1)  = 0
-      PTLAST(NUMSTK+1) = 0 + INTARR(JDEBROW8-3) - 1
+      PTLAST(NUMSTK+1) = NINCOLARR(IARR1)-1
+      IORG = 0
    50 CONTINUE
-      J18 = PTRAIW(IN) + 2
-      JT1 = INTARR(J18)
-      INTARR(J18) = INEW1
-      ITLOC(JT1) = INEW1
-      IW(INEW)         = JT1
-      IW(INEW+NFRONT)  = JT1
-      INEW = INEW + 1
-      INEW1 = INEW1 + 1
-      IN = FILS(IN)
+        IORG = IORG + 1
+        J18 = PTR8ARR(IARR1+IORG-1)
+        JT1 = INTARR(J18)
+        INTARR(J18) = INEW1
+        ITLOC(JT1) = INEW1
+        IW(INEW)         = JT1
+        IW(INEW+NFRONT)  = JT1
+        INEW = INEW + 1
+        INEW1 = INEW1 + 1
+        IN = FILS(IN)
       IF (IN .GT. 0) GOTO 50
       NTOTFS = NTOTFS + NUMORG
       IF (NUMSTK .NE. 0) THEN
@@ -239,6 +267,15 @@ C
           K2 = PIMASTER(STEP(ISON))
           SON_IW => IW
           SON_IWPOSCB => IWPOSCB
+          IF ( KEEP(400) .GT. 0 ) THEN
+            IF (present( L0_OMP_MAPPING )) THEN
+              ITHREAD=L0_OMP_MAPPING(STEP(ISON))
+              IF (ITHREAD .GT. 0) THEN
+                SON_IW      => MUMPS_TPS_ARR(ITHREAD)%IW
+                SON_IWPOSCB => MUMPS_TPS_ARR(ITHREAD)%IWPOSCB
+              ENDIF
+            ENDIF
+          ENDIF
           LSTK   = SON_IW(K2    +KEEP(IXSZ))
           NELIM  = SON_IW(K2 + 1+KEEP(IXSZ))
           NPIVS  = SON_IW(K2 + 3+KEEP(IXSZ))
@@ -315,8 +352,19 @@ C
       END IF
       END IF
       MIN_PERM = N + 1
+      IF (KEEP(400) .GT. 0) THEN
+        ISON = IFSON
+      ENDIF
       DO IELL = 1, NUMSTK 
         SON_IW => IW
+        IF ( KEEP(400) .GT. 0 ) THEN
+          IF (present( MUMPS_TPS_ARR )) THEN
+            ITHREAD = L0_OMP_MAPPING(STEP(ISON))
+            IF (ITHREAD .GT. 0) THEN
+              SON_IW      => MUMPS_TPS_ARR(ITHREAD)%IW
+            ENDIF
+          ENDIF
+        ENDIF
         ILOC = PTTRI( IELL )
         IF ( ILOC .LE. PTLAST( IELL ) ) THEN 
          IF ( PERM( SON_IW( ILOC ) ) .LT. MIN_PERM ) THEN
@@ -324,6 +372,9 @@ C
            MIN_PERM = PERM( JMIN )
          END IF
         END IF
+        IF (KEEP(400) .GT. 0) THEN
+          ISON = FRERE_STEPS(STEP(ISON))
+        ENDIF
       END DO
       IELL = NUMSTK + 1
       ILOC =  PTTRI( IELL )
@@ -341,8 +392,19 @@ C
           ITLOC( JMIN ) = NFRONT_EFF
           LAST_J_ASS = JMIN
           MIN_PERM = N + 1
+          IF (KEEP(400) .GT. 0) THEN
+            ISON = IFSON
+          ENDIF
           DO IELL = 1,  NUMSTK
             SON_IW => IW
+            IF (KEEP(400) .GT. 0) THEN
+              IF (present( MUMPS_TPS_ARR )) THEN
+                ITHREAD=L0_OMP_MAPPING(STEP(ISON))
+                IF (ITHREAD .GT. 0) THEN
+                  SON_IW      => MUMPS_TPS_ARR(ITHREAD)%IW
+                ENDIF
+              ENDIF
+            ENDIF
             IF ( PTTRI( IELL ) .LE. PTLAST( IELL ) ) THEN
               IF ( SON_IW( PTTRI( IELL ) ) .eq. LAST_J_ASS )
      &        PTTRI( IELL ) = PTTRI( IELL ) + 1
@@ -353,6 +415,9 @@ C
                 MIN_PERM = PERM( JMIN )
              END IF
             END IF
+            IF (KEEP(400).GT.0) THEN
+              ISON = FRERE_STEPS(STEP(ISON))
+            ENDIF
           END DO
           IELL = NUMSTK + 1
  145      CONTINUE
@@ -372,14 +437,12 @@ C
       NEWEL_SAVE  = NEWEL
       NEWEL1_SAVE = NFRONT_EFF
       IF (NEWEL1_SAVE.LT.NFRONT - KEEP(253)) THEN 
-      IBROT = INODE
       DO IORG = 1, NUMORG
-         J18    = PTRAIW(IBROT) + 2
-         J28    = J18 + INTARR(J18 - 2) - INTARR(J18-1)
-         IBROT = FILS( IBROT )
+         J18 = PTR8ARR(IARR1+IORG-1)
+         J28 = J18 + NINCOLARR(IARR1+IORG-1) + NINROWARR(IARR1+IORG-1)
          IF ( IORG.EQ. 1) THEN
-           IF ( KEEP(50).NE.0 ) CYCLE
-           J18 = J18 + 1 + INTARR(J18-2)
+           IF ( KEEP(50).NE.0 ) GOTO 100
+           J18 = J18 + 1 + NINCOLARR(IARR1+IORG-1)
          ELSE
            J18 = J18 + 1
          ENDIF
@@ -392,6 +455,7 @@ C
             ITLOC( J ) = NFRONT_EFF
            END IF
          ENDDO
+ 100     CONTINUE
       ENDDO
        IF ( (TYPESPLIT.EQ.4).AND.
      &      (NFRONT_EFF.LT.NFRONT-KEEP(253)) ) THEN
@@ -409,10 +473,14 @@ C
      &        )
      &      )
           IBROT = DAD(STEP(IBROT))
+          IARR1DAD= PTRDEBARR(STEP(IBROT))
+          IORGDAD = 0
           IN = IBROT
           DO WHILE (IN.GT.0.AND.NFRONT_EFF.LT.NFRONT-KEEP(253))
-            J18    = PTRAIW(IN) + 2
-            J28    = J18 + INTARR(J18 - 2) - INTARR(J18-1)
+            IORGDAD = IORGDAD + 1
+            J18    = PTR8ARR(IARR1DAD+IORGDAD-1)
+            J28    = J18 + NINCOLARR(IARR1DAD+IORGDAD-1) +
+     &                     NINROWARR(IARR1DAD+IORGDAD-1)
             IN = FILS( IN )
             DO JJ8 = J18, J28
               J     = INTARR( JJ8 )
@@ -468,8 +536,12 @@ C
           IW(IP2+I-1)=IW(IP1+I-1)
         ENDDO
       ELSE IF (NFRONT .LT. NFRONT_EFF) THEN
-        WRITE(*,*) "Internal error in MUMPS_BUILD_SORT_INDEX",
-     &             NFRONT, NFRONT_EFF
+        IF (LPOK) THEN
+         WRITE(LP,*) " Error in MUMPS_BUILD_SORT_INDEX:",
+     &     " matrix structure might have changed,", 
+     &     " analysis (JOB=1) should be performed again ", 
+     &     " NFRONTexpected, NFRONTeffective=", NFRONT, NFRONT_EFF
+        ENDIF
        IFLAG = -53
        GOTO 800
       ENDIF
@@ -481,6 +553,15 @@ C
           K2 = PIMASTER(STEP(ISON))
           SON_IW => IW
           SON_IWPOSCB => IWPOSCB
+          IF (KEEP(400).GT.0) THEN
+            IF (present( MUMPS_TPS_ARR )) THEN
+              ITHREAD=L0_OMP_MAPPING(STEP(ISON))
+              IF (ITHREAD .GT. 0) THEN
+                SON_IW      => MUMPS_TPS_ARR(ITHREAD)%IW
+                SON_IWPOSCB => MUMPS_TPS_ARR(ITHREAD)%IWPOSCB
+              ENDIF
+            ENDIF
+          ENDIF
           LSTK = SON_IW(K2+KEEP(IXSZ))
           NELIM = SON_IW(K2 + 1 +KEEP(IXSZ))
           NPIVS = SON_IW(K2 + 3 +KEEP(IXSZ))
@@ -521,11 +602,9 @@ C
           ISON = FRERE_STEPS(STEP(ISON))
         ENDDO
       ENDIF
-      IBROT = INODE
       DO IORG = 1, NUMORG
-        J18 = PTRAIW(IBROT) + 2
-        IBROT = FILS(IBROT)
-        J28 = J18 + INTARR(J18 - 2) - INTARR(J18 - 1)
+        J18 = PTR8ARR(IARR1+IORG-1)
+        J28    = J18 + NINCOLARR(IARR1+IORG-1) + NINROWARR(IARR1+IORG-1)
         J18 = J18 + 1
         DO JJ8 = J18, J28
           J = INTARR(JJ8)
@@ -548,8 +627,7 @@ C
           ENDDO
         ENDIF
   800 CONTINUE
-      IF (allocated(PTTRI)) DEALLOCATE(PTTRI)
-      IF (allocated(PTLAST)) DEALLOCATE(PTLAST)
+      IF (allocated(TMP_ALLOC_ARRAY)) DEALLOCATE(TMP_ALLOC_ARRAY)
       RETURN
       END SUBROUTINE MUMPS_BUILD_SORT_INDEX
       END MODULE MUMPS_BUILD_SORT_INDEX_M

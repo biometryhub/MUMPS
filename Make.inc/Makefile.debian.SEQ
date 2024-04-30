@@ -1,32 +1,30 @@
 #
-#  This file is part of MUMPS 5.3.5, released
-#  on Thu Oct 22 09:29:08 UTC 2020
+#  This file is part of MUMPS 5.7.0, released
+#  on Tue Apr 23 10:25:09 UTC 2024
 #
 # These settings for a PC under Debian/linux with standard packages :
 # metis (parmetis), scotch (ptscotch), openmpi, gfortran
 
 # packages installation: 
-# apt-get install libmetis-dev libparmetis-dev libscotch-dev libptscotch-dev libatlas-base-dev openmpi-bin libopenmpi-dev liblapack-dev
-
-arch := $(shell uname -p)
+# apt-get install libmetis-dev libparmetis-dev libscotch-dev libptscotch-dev libatlas-base-dev openmpi-bin libopenmpi-dev liblapack-dev libscalapack-openmpi-dev
 
 # Begin orderings
-LSCOTCHDIR = $(topdir)/../scotch/lib
-ISCOTCH   = -I$(topdir)/../scotch/include
+LSCOTCHDIR = /usr/lib
+ISCOTCH   = -I/usr/include/scotch
 
 #LSCOTCH   = -L$(LSCOTCHDIR) -lptesmumps -lptscotch -lptscotcherr
-LSCOTCH   = $(LSCOTCHDIR)/libesmumps.a $(LSCOTCHDIR)/libscotch.a $(LSCOTCHDIR)/libscotcherr.a 
+LSCOTCH   = -L$(LSCOTCHDIR) -lesmumps -lscotch -lscotcherr
 
 LPORDDIR = $(topdir)/PORD/lib/
 IPORD    = -I$(topdir)/PORD/include/
-LPORD    = -L$(LPORDDIR) -lpord
+LPORD    = -L$(LPORDDIR) -lpord$(PLAT)
 
-LMETISDIR = /usr/lib/x86_64-linux-gnu
+LMETISDIR = /usr/lib 
 #IMETIS    = -I/usr/include/parmetis
-IMETIS    = -I$(topdir)/../metis/include
+IMETIS    = -I/usr/include/metis
 
 # LMETIS    = -L$(LMETISDIR) -lparmetis -lmetis
-LMETIS    = $(topdir)/../metis/build/Linux-$(arch)/libmetis/libmetis.a
+LMETIS    = -L$(LMETISDIR) -lmetis
 
 # Corresponding variables reused later
 #ORDERINGSF = -Dmetis -Dpord -Dparmetis -Dscotch -Dptscotch
@@ -40,13 +38,20 @@ IORDERINGSC = $(IMETIS) $(IPORD) $(ISCOTCH)
 ################################################################################
 
 PLAT    =
+LIBEXT_SHARED  = .so
+SONAME = -soname
+SHARED_OPT = -shared
+FPIC_OPT = -fPIC
+# Adapt/uncomment RPATH_OPT to avoid modifying
+# LD_LIBRARY_PATH in case of shared libraries
+# RPATH_OPT = -Wl,-rpath,/path/to/MUMPS_x.y.z/lib/
 LIBEXT  = .a
 OUTC    = -o 
 OUTF    = -o 
 RM = /bin/rm -f
-CC = gcc -fPIC
-FC = gfortran -fPIC -fallow-argument-mismatch
-FL = gfortran -fPIC -fallow-argument-mismatch
+CC = gcc
+FC = gfortran
+FL = gfortran
 AR = ar vr 
 RANLIB = ranlib
 LAPACK = -llapack
@@ -54,7 +59,7 @@ LAPACK = -llapack
 
 
 INCSEQ = -I$(topdir)/libseq
-LIBSEQ  = $(LAPACK) -L$(topdir)/libseq -lmpiseq
+LIBSEQ  = $(LAPACK) -L$(topdir)/libseq -lmpiseq$(PLAT)
 
 LIBBLAS = -lblas
 LIBOTHERS = -lpthread
@@ -63,7 +68,9 @@ LIBOTHERS = -lpthread
 CDEFS   = -DAdd_
 
 #Begin Optimized options
-OPTF    = -O -fopenmp
+OPTF    = -O -fopenmp -fallow-argument-mismatch
+# Uncomment the line below if your version of gfortran is < 10
+#OPTF    = -O -fopenmp
 OPTL    = -O -fopenmp
 OPTC    = -O -fopenmp
 #End Optimized options

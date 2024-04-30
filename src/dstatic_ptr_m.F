@@ -1,9 +1,9 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
 C
-C  Copyright 1991-2021 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
+C  Copyright 1991-2024 CERFACS, CNRS, ENS Lyon, INP Toulouse, Inria,
 C  Mumps Technologies, University of Bordeaux.
 C
 C  This version of MUMPS is provided to you free of charge. It is
@@ -21,10 +21,10 @@ C
       RETURN
       END SUBROUTINE DMUMPS_SET_STATIC_PTR
       SUBROUTINE DMUMPS_GET_TMP_PTR(PTR)
-#if defined(MUMPS_F2003)
-      DOUBLE PRECISION, DIMENSION(:), POINTER, INTENT(OUT) :: PTR
-#else
+#if defined(MUMPS_NOF2003)
       DOUBLE PRECISION, DIMENSION(:), POINTER :: PTR
+#else
+      DOUBLE PRECISION, DIMENSION(:), POINTER, INTENT(OUT) :: PTR
 #endif
       PTR => DMUMPS_TMP_PTR
       RETURN

@@ -1,6 +1,6 @@
 C
-C  This file is part of MUMPS 5.4.0, released
-C  on Tue Apr 13 15:26:30 UTC 2021
+C  This file is part of MUMPS 5.7.0, released
+C  on Tue Apr 23 10:25:09 UTC 2024
 C
       PROGRAM MUMPS_TEST_SAVE_RESTORE
       IMPLICIT NONE
@@ -68,7 +68,7 @@ C  Destroy the instance (deallocate internal data structures)
       CALL SMUMPS(mumps_par_save)
 C  Now mumps_par_save has be destroyed
 C  We use a new instance mumps_par_restore to finish the computation
-C  Define a communicator for the package on the new instace.
+C  Define a communicator for the package on the new instance.
       mumps_par_restore%COMM = MPI_COMM_WORLD
 C  Initialize a new instance of the package
 C  for L U factorization (sym = 0, with working host)
